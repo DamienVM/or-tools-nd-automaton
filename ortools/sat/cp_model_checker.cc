@@ -577,7 +577,7 @@ std::string ValidateAutomatonConstraint(const CpModelProto& model,
   for (const LinearExpressionProto& expr : automaton.exprs()) {
     RETURN_IF_NOT_EMPTY(ValidateLinearExpression(model, expr));
   }
-  absl::flat_hash_map<std::pair<int64_t, int64_t>, int64_t> tail_label_to_head;
+  absl::flat_hash_set<std::tuple<int64_t, int64_t, int64_t>> transitions;
   for (int i = 0; i < num_transistions; ++i) {
     const int64_t tail = automaton.transition_tail(i);
     const int64_t head = automaton.transition_head(i);
@@ -587,17 +587,9 @@ std::string ValidateAutomatonConstraint(const CpModelProto& model,
       return absl::StrCat("labels in the automaton constraint are too big: ",
                           label);
     }
-    const auto [it, inserted] =
-        tail_label_to_head.insert({{tail, label}, head});
-    if (!inserted) {
-      if (it->second == head) {
-        return absl::StrCat("automaton: duplicate transition ", tail, " --(",
-                            label, ")--> ", head);
-      } else {
-        return absl::StrCat("automaton: incompatible transitions ", tail,
-                            " --(", label, ")--> ", head, " and ", tail, " --(",
-                            label, ")--> ", it->second);
-      }
+    if (!transitions.insert({tail, label, head}).second) {
+      return absl::StrCat("automaton: duplicate transition ", tail, " --(",
+                          label, ")--> ", head);
     }
   }
   return "";
@@ -1599,34 +1591,42 @@ class ConstraintChecker {
   }
 
   bool AutomatonConstraintIsFeasible(const ConstraintProto& ct) {
-    // Build the transition table {tail, label} -> head.
+    // Build the transition table {tail, label} -> {heads}. The automaton can be
+    // non-deterministic, so a (tail, label) pair can have several heads.
     const AutomatonConstraintProto& automaton = ct.automaton();
-    absl::flat_hash_map<std::pair<int64_t, int64_t>, int64_t> transition_map;
+    absl::flat_hash_map<std::pair<int64_t, int64_t>, std::vector<int64_t>>
+        transition_map;
     const int num_transitions = automaton.transition_tail().size();
     for (int i = 0; i < num_transitions; ++i) {
       transition_map[{automaton.transition_tail(i),
-                      automaton.transition_label(i)}] =
-          automaton.transition_head(i);
+                      automaton.transition_label(i)}]
+          .push_back(automaton.transition_head(i));
     }
 
-    // Walk the automaton.
-    int64_t current_state = automaton.starting_state();
+    // Walk the automaton, tracking the set of states reachable by the given
+    // label sequence. The constraint is satisfied iff at least one accepting
+    // run exists.
+    std::vector<int64_t> current_states = {automaton.starting_state()};
+    absl::flat_hash_set<int64_t> next_states;
     const int num_steps =
         std::max(automaton.vars_size(), automaton.exprs_size());
     for (int i = 0; i < num_steps; ++i) {
-      const std::pair<int64_t, int64_t> key = {
-          current_state, automaton.vars().empty()
-                             ? LinearExpressionValue(automaton.exprs(i))
-                             : Value(automaton.vars(i))};
-      if (!transition_map.contains(key)) {
-        return false;
+      const int64_t label = automaton.vars().empty()
+                                ? LinearExpressionValue(automaton.exprs(i))
+                                : Value(automaton.vars(i));
+      next_states.clear();
+      for (const int64_t state : current_states) {
+        const auto it = transition_map.find({state, label});
+        if (it == transition_map.end()) continue;
+        next_states.insert(it->second.begin(), it->second.end());
       }
-      current_state = transition_map[key];
+      if (next_states.empty()) return false;
+      current_states.assign(next_states.begin(), next_states.end());
     }
 
-    // Check we are now in a final state.
+    // Check that we can be in a final state.
     for (const int64_t final : automaton.final_states()) {
-      if (current_state == final) return true;
+      if (absl::c_linear_search(current_states, final)) return true;
     }
     return false;
   }

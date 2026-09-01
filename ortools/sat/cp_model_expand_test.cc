@@ -1123,6 +1123,103 @@ TEST(AutomatonExpandTest, NonogramRule) {
   EXPECT_EQ(found_solutions, expected);
 }
 
+TEST(AutomatonExpandTest, NonDeterministicBranch) {
+  // State 0 has two outgoing transitions labelled 0, only one of which can lead
+  // to the final state depending on the rest of the sequence.
+  CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { domain: [ 0, 1 ] }
+    variables { domain: [ 0, 1 ] }
+    variables { domain: [ 0, 1 ] }
+    variables { domain: [ 0, 1 ] }
+    constraints {
+      automaton {
+        final_states: [ 3 ]
+        transition_tail: [ 0, 0, 0, 1, 2, 1, 2 ]
+        transition_head: [ 1, 2, 2, 1, 2, 3, 3 ]
+        transition_label: [ 0, 0, 1, 0, 1, 1, 0 ]
+        exprs { vars: 0 coeffs: 1 }
+        exprs { vars: 1 coeffs: 1 }
+        exprs { vars: 2 coeffs: 1 }
+        exprs { vars: 3 coeffs: 1 }
+      }
+    }
+    solution_hint {
+      vars: [ 0, 1, 2, 3 ]
+      values: [ 0, 1, 1, 0 ]
+    }
+  )pb");
+  absl::btree_set<std::vector<int>> found_solutions;
+  const CpSolverResponse response =
+      SolveAndCheck(initial_model, "", &found_solutions);
+  // Without the added 0 --(0)--> 2 transition only the first and last are
+  // accepted; the middle one requires taking the non-deterministic branch.
+  absl::btree_set<std::vector<int>> expected{
+      {0, 0, 0, 1}, {0, 1, 1, 0}, {1, 1, 1, 0}};
+  EXPECT_EQ(found_solutions, expected);
+}
+
+TEST(AutomatonExpandTest, NonDeterministicWithSeveralAcceptingRuns) {
+  // The sequence (0, 0) is accepted by two distinct runs, 0 -> 1 -> 3 and
+  // 0 -> 2 -> 3. It is still a single solution of the constraint.
+  CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { domain: [ 0, 1 ] }
+    variables { domain: [ 0, 1 ] }
+    constraints {
+      automaton {
+        final_states: [ 3 ]
+        transition_tail: [ 0, 0, 1, 2 ]
+        transition_head: [ 1, 2, 3, 3 ]
+        transition_label: [ 0, 0, 0, 0 ]
+        exprs { vars: 0 coeffs: 1 }
+        exprs { vars: 1 coeffs: 1 }
+      }
+    }
+    solution_hint {
+      vars: [ 0, 1 ]
+      values: [ 0, 0 ]
+    }
+  )pb");
+  absl::btree_set<std::vector<int>> found_solutions;
+  const CpSolverResponse response =
+      SolveAndCheck(initial_model, "", &found_solutions);
+  absl::btree_set<std::vector<int>> expected{{0, 0}};
+  EXPECT_EQ(found_solutions, expected);
+}
+
+TEST(AutomatonExpandTest, NonDeterministicDenseTransitions) {
+  // 16 transitions over 4 states and 3 labels, so that the number of tuples
+  // exceeds the number of involved variables: this is the size regime where the
+  // light encoding would be picked for a deterministic automaton.
+  CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { domain: [ 0, 2 ] }
+    variables { domain: [ 0, 2 ] }
+    variables { domain: [ 0, 2 ] }
+    constraints {
+      automaton {
+        final_states: [ 3 ]
+        transition_tail: [ 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3 ]
+        transition_head: [ 1, 2, 1, 3, 1, 3, 2, 0, 2, 3, 0, 1, 0, 3, 2, 1 ]
+        transition_label: [ 0, 0, 1, 2, 0, 0, 1, 2, 0, 1, 1, 2, 0, 1, 2, 2 ]
+        exprs { vars: 0 coeffs: 1 }
+        exprs { vars: 1 coeffs: 1 }
+        exprs { vars: 2 coeffs: 1 }
+      }
+    }
+    solution_hint {
+      vars: [ 0, 1, 2 ]
+      values: [ 0, 0, 0 ]
+    }
+  )pb");
+  absl::btree_set<std::vector<int>> found_solutions;
+  const CpSolverResponse response =
+      SolveAndCheck(initial_model, "", &found_solutions);
+  absl::btree_set<std::vector<int>> expected{
+      {0, 0, 0}, {0, 0, 1}, {0, 1, 1}, {0, 1, 2}, {0, 2, 0},
+      {0, 2, 2}, {1, 0, 0}, {1, 0, 1}, {1, 1, 1}, {1, 2, 2},
+      {2, 0, 2}, {2, 1, 1}, {2, 2, 0}, {2, 2, 1}};
+  EXPECT_EQ(found_solutions, expected);
+}
+
 TEST(AutomatonExpandTest, Bug1753_1) {
   CpModelProto initial_model = ParseTestProto(R"pb(
     variables { name: "0" domain: 0 domain: 2 }

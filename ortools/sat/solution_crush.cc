@@ -622,35 +622,73 @@ void SolutionCrush::SetAutomatonExpandedVars(
     absl::Span<const StateVar> state_vars,
     absl::Span<const TransitionVar> transition_vars) {
   if (!solution_is_loaded_) return;
-  absl::flat_hash_map<std::pair<int64_t, int64_t>, int64_t> transitions;
+  // The automaton can be non-deterministic, so a (tail, label) pair can have
+  // several heads.
+  absl::flat_hash_map<std::pair<int64_t, int64_t>, std::vector<int64_t>>
+      transitions;
   for (int i = 0; i < automaton.transition_tail_size(); ++i) {
-    transitions[{automaton.transition_tail(i), automaton.transition_label(i)}] =
-        automaton.transition_head(i);
+    transitions[{automaton.transition_tail(i), automaton.transition_label(i)}]
+        .push_back(automaton.transition_head(i));
   }
 
+  const int num_steps = automaton.exprs_size();
   std::vector<int64_t> label_values;
-  std::vector<int64_t> state_values;
-  int64_t current_state = automaton.starting_state();
-  state_values.push_back(current_state);
-  for (int i = 0; i < automaton.exprs_size(); ++i) {
+  label_values.reserve(num_steps);
+  for (int i = 0; i < num_steps; ++i) {
     const std::optional<int64_t> label_value =
         GetExpressionValue(automaton.exprs(i));
     if (!label_value.has_value()) return;
     label_values.push_back(label_value.value());
+  }
 
-    const auto it = transitions.find({current_state, label_value.value()});
-    if (it == transitions.end()) return;
-    current_state = it->second;
-    state_values.push_back(current_state);
+  // Forward pass: compute the set of states reachable at each time step.
+  std::vector<std::vector<int64_t>> reachable_states(num_steps + 1);
+  reachable_states[0].push_back(automaton.starting_state());
+  for (int i = 0; i < num_steps; ++i) {
+    absl::flat_hash_set<int64_t> next_states;
+    for (const int64_t state : reachable_states[i]) {
+      const auto it = transitions.find({state, label_values[i]});
+      if (it == transitions.end()) continue;
+      next_states.insert(it->second.begin(), it->second.end());
+    }
+    // The hinted labels do not satisfy the constraint, leave the expanded
+    // variables alone.
+    if (next_states.empty()) return;
+    reachable_states[i + 1].assign(next_states.begin(), next_states.end());
+  }
+
+  // Backward pass: extract one accepting run. Any predecessor of the selected
+  // state that is forward-reachable will do, so this cannot fail once an
+  // accepting state has been found.
+  std::vector<int64_t> state_values(num_steps + 1);
+  bool is_accepting = false;
+  for (const int64_t final_state : automaton.final_states()) {
+    if (absl::c_linear_search(reachable_states[num_steps], final_state)) {
+      state_values[num_steps] = final_state;
+      is_accepting = true;
+      break;
+    }
+  }
+  if (!is_accepting) return;
+  for (int i = num_steps - 1; i >= 0; --i) {
+    for (const int64_t state : reachable_states[i]) {
+      const auto it = transitions.find({state, label_values[i]});
+      if (it == transitions.end()) continue;
+      if (absl::c_linear_search(it->second, state_values[i + 1])) {
+        state_values[i] = state;
+        break;
+      }
+    }
   }
 
   for (const auto& [var, time, state] : state_vars) {
     SetVarValue(var, state_values[time] == state);
   }
-  for (const auto& [var, time, transition_tail, transition_label] :
-       transition_vars) {
+  for (const auto& [var, time, transition_tail, transition_label,
+                    transition_head] : transition_vars) {
     SetVarValue(var, state_values[time] == transition_tail &&
-                         label_values[time] == transition_label);
+                         label_values[time] == transition_label &&
+                         state_values[time + 1] == transition_head);
   }
 }
 

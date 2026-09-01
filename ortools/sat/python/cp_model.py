@@ -729,6 +729,10 @@ class CpModel(cmh.CpBaseModel):
         the values of the expressions that ends in one of the final states in the
         final phase.
 
+        The automaton can be non-deterministic: several transitions can share the
+        same (*tail*, *transition*) pair. As the definition above says, it is
+        enough for one such path to exist.
+
         Args:
           transition_expressions: A non-empty list of affine expressions (a * var +
             b) whose values correspond to the labels of the arcs traversed by the

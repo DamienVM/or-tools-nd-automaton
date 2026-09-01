@@ -288,8 +288,11 @@ message AutomatonConstraintProto {
   repeated int64 final_states = 3;
 
   // List of transitions (all 3 vectors have the same size). Both tail and head
-  // are states, label is any variable value. No two outgoing transitions from
-  // the same state can have the same label.
+  // are states, label is any variable value. The automaton can be
+  // non-deterministic: several outgoing transitions from the same state can
+  // have the same label, in which case the constraint is satisfied as soon as
+  // there exists an accepting run of the sequence of labels. The same
+  // transition cannot be repeated though.
   repeated int64 transition_tail = 4;
   repeated int64 transition_head = 5;
   repeated int64 transition_label = 6;
