@@ -30,6 +30,7 @@ namespace {
 
 using ::google::protobuf::contrib::parse_proto::ParseTestProto;
 using ::testing::HasSubstr;
+using ::testing::IsEmpty;
 
 // This just checks that the code is at least properly executed.
 TEST(SolutionIsFeasibleTest, BasicExample) {
@@ -603,7 +604,7 @@ TEST(ValidateCpModelTest, NegativeModulo) {
               HasSubstr("strictly positive modulo argument"));
 }
 
-TEST(ValidateCpModelTest, IncompatibleAutomatonTransitions) {
+TEST(ValidateCpModelTest, NonDeterministicAutomatonTransitionsAreValid) {
   const CpModelProto model = ParseTestProto(R"pb(
     variables { domain: 0 domain: 1 }
     constraints {
@@ -619,8 +620,7 @@ TEST(ValidateCpModelTest, IncompatibleAutomatonTransitions) {
       }
     }
   )pb");
-  EXPECT_THAT(ValidateCpModel(model),
-              HasSubstr("automaton: incompatible transitions"));
+  EXPECT_THAT(ValidateCpModel(model), IsEmpty());
 }
 
 TEST(ValidateCpModelTest, DuplicateAutomatonTransitions) {

@@ -998,6 +998,10 @@ class CpModelBuilder {
    * path labeled by the values of the variables that ends in one of the final
    * states in the final phase.
    *
+   * The automaton can be non-deterministic: several transitions can share the
+   * same ('tail', 'label') pair. As the definition above says, it is enough for
+   * one such path to exist.
+   *
    * It returns an AutomatonConstraint that allows adding transition
    * incrementally after construction.
    */

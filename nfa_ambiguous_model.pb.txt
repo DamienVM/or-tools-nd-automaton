@@ -1,0 +1,31 @@
+# proto-file: ortools/sat/cp_model.proto
+# proto-message: operations_research.sat.CpModelProto
+#
+# Ambiguous NFA: the label sequence (0, 0) has TWO distinct accepting runs,
+# 0 -> 1 -> 3 and 0 -> 2 -> 3. It must still count as a single solution: the
+# constraint is on the label sequence, and the run-selection Booleans are
+# internal to the expansion.
+#
+# Expected: exactly 1 solution, x0 = x1 = 0.
+
+variables { name: "x0" domain: 0 domain: 1 }
+variables { name: "x1" domain: 0 domain: 1 }
+constraints {
+  automaton {
+    final_states: 3
+    transition_tail: 0
+    transition_tail: 0
+    transition_tail: 1
+    transition_tail: 2
+    transition_head: 1
+    transition_head: 2
+    transition_head: 3
+    transition_head: 3
+    transition_label: 0
+    transition_label: 0
+    transition_label: 0
+    transition_label: 0
+    exprs { vars: 0 coeffs: 1 }
+    exprs { vars: 1 coeffs: 1 }
+  }
+}

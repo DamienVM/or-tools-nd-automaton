@@ -106,6 +106,7 @@ CMakeCache.txt
 CMakeFiles
 DartConfiguration.tcl
 /build*/
+cmake/samples/java/target/
 
 # Ignore Bzlmod lock file until it is more stable
 MODULE.bazel.lock

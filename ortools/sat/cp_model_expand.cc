@@ -1524,9 +1524,25 @@ void ExpandAutomaton(ConstraintProto* ct, PresolveContext* context) {
     // solver to solve it in a couple of seconds!
     //
     // Note that both encoding create about the same number of constraints.
+    // The light encoding is only valid if the surviving transitions are
+    // functional, i.e. if no (in_state, label) pair leads to two different out
+    // states. Its 3-clauses would otherwise force the automaton to be in
+    // several states at once, making any non-deterministic branch infeasible.
+    bool is_functional = true;
+    {
+      absl::flat_hash_set<std::pair<int64_t, int64_t>> in_state_label_pairs;
+      for (int i = 0; i < num_tuples; ++i) {
+        if (!in_state_label_pairs.insert({in_states[i], labels[i]}).second) {
+          is_functional = false;
+          break;
+        }
+      }
+    }
+
     const int num_involved_variables =
         in_encoding.size() + encoding.size() + out_encoding.size();
-    const bool use_light_encoding = (num_tuples > num_involved_variables);
+    const bool use_light_encoding =
+        is_functional && (num_tuples > num_involved_variables);
     if (use_light_encoding && !in_encoding.empty() && !encoding.empty() &&
         !out_encoding.empty()) {
       // Part 1: If a in_state is selected, restrict the set of possible labels.
@@ -1570,13 +1586,16 @@ void ExpandAutomaton(ConstraintProto* ct, PresolveContext* context) {
     std::vector<int> tuple_literals;
     if (num_tuples == 2) {
       const int bool_var = context->NewBoolVar("automaton expansion");
-      new_transition_vars.push_back({bool_var, time, in_states[0], labels[0]});
+      new_transition_vars.push_back(
+          {bool_var, time, in_states[0], labels[0], out_states[0]});
       tuple_literals.push_back(bool_var);
       tuple_literals.push_back(NegatedRef(bool_var));
     } else {
-      // Note that we do not need the ExactlyOneConstraint(tuple_literals)
-      // because it is already implicitly encoded since we have exactly one
-      // transition value. But adding one seems to help.
+      // Note that for a deterministic automaton we do not need the
+      // ExactlyOneConstraint(tuple_literals) because it is already implicitly
+      // encoded since we have exactly one transition value. But adding one
+      // seems to help. For a non-deterministic one it is what selects the
+      // transition taken by the accepting run, so it is needed.
       BoolArgumentProto* exactly_one =
           context->AddEnforcedConstraint(ct)->mutable_exactly_one();
       for (int i = 0; i < num_tuples; ++i) {
@@ -1590,7 +1609,7 @@ void ExpandAutomaton(ConstraintProto* ct, PresolveContext* context) {
         } else {
           tuple_literal = context->NewBoolVar("automaton expansion");
           new_transition_vars.push_back(
-              {tuple_literal, time, in_states[i], labels[i]});
+              {tuple_literal, time, in_states[i], labels[i], out_states[i]});
         }
 
         tuple_literals.push_back(tuple_literal);
