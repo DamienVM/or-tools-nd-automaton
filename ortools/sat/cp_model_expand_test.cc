@@ -14,10 +14,14 @@
 #include "ortools/sat/cp_model_expand.h"
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "absl/container/btree_set.h"
+#include "absl/random/random.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "gtest/gtest.h"
 #include "ortools/base/container_logging.h"
 #include "ortools/base/gmock.h"
@@ -68,6 +72,275 @@ CpSolverResponse SolveAndCheck(
   model.Add(NewSatParameters(params));
   model.Add(NewFeasibleSolutionObserver(observer));
   return SolveCpModel(initial_model, &model);
+}
+
+// Builds "vars in [0, domain_size), plus the consecutive-pair restriction",
+// either as one native transitions constraint or as one table per consecutive
+// pair. `forbidden` selects which direction the pair list means.
+CpModelProto BuildTransitionsModel(
+    int num_vars, int domain_size,
+    absl::Span<const std::pair<int64_t, int64_t>> pairs, bool forbidden,
+    bool use_native) {
+  CpModelProto model;
+  for (int i = 0; i < num_vars; ++i) {
+    IntegerVariableProto* var = model.add_variables();
+    var->add_domain(0);
+    var->add_domain(domain_size - 1);
+  }
+  if (use_native) {
+    TransitionsConstraintProto* proto =
+        model.add_constraints()->mutable_transitions();
+    for (int i = 0; i < num_vars; ++i) {
+      LinearExpressionProto* expr = proto->add_exprs();
+      expr->add_vars(i);
+      expr->add_coeffs(1);
+    }
+    ValuePairsProto* list =
+        forbidden ? proto->mutable_forbidden() : proto->mutable_allowed();
+    for (const auto& [a, b] : pairs) {
+      list->add_pairs(a);
+      list->add_pairs(b);
+    }
+  } else {
+    for (int i = 0; i + 1 < num_vars; ++i) {
+      TableConstraintProto* table = model.add_constraints()->mutable_table();
+      table->set_negated(forbidden);
+      for (int k = 0; k < 2; ++k) {
+        LinearExpressionProto* expr = table->add_exprs();
+        expr->add_vars(i + k);
+        expr->add_coeffs(1);
+      }
+      for (const auto& [a, b] : pairs) {
+        table->add_values(a);
+        table->add_values(b);
+      }
+    }
+  }
+  return model;
+}
+
+// Reference semantics, by brute force over the whole cube.
+absl::btree_set<std::vector<int>> BruteForceTransitions(
+    int num_vars, int domain_size,
+    absl::Span<const std::pair<int64_t, int64_t>> pairs, bool forbidden) {
+  absl::btree_set<std::vector<int>> result;
+  std::vector<int> point(num_vars, 0);
+  while (true) {
+    bool ok = true;
+    for (int i = 0; ok && i + 1 < num_vars; ++i) {
+      bool listed = false;
+      for (const auto& [a, b] : pairs) {
+        if (point[i] == a && point[i + 1] == b) {
+          listed = true;
+          break;
+        }
+      }
+      if (listed == forbidden) ok = false;
+    }
+    if (ok) result.insert(point);
+
+    int i = 0;
+    for (; i < num_vars; ++i) {
+      if (++point[i] < domain_size) break;
+      point[i] = 0;
+    }
+    if (i == num_vars) break;
+  }
+  return result;
+}
+
+TEST(TransitionsExpandTest, MatchesBruteForceAndTables) {
+  absl::BitGen random;
+  for (const bool forbidden : {true, false}) {
+    for (int num_vars = 0; num_vars <= 4; ++num_vars) {
+      for (int domain_size = 1; domain_size <= 3; ++domain_size) {
+        for (int trial = 0; trial < 6; ++trial) {
+          std::vector<std::pair<int64_t, int64_t>> pairs;
+          const int num_pairs = absl::Uniform(random, 0, 6);
+          for (int k = 0; k < num_pairs; ++k) {
+            pairs.push_back({absl::Uniform(random, 0, domain_size),
+                             absl::Uniform(random, 0, domain_size)});
+          }
+
+          const absl::btree_set<std::vector<int>> expected =
+              BruteForceTransitions(num_vars, domain_size, pairs, forbidden);
+
+          absl::btree_set<std::vector<int>> native_solutions;
+          const CpSolverResponse native = SolveAndCheck(
+              BuildTransitionsModel(num_vars, domain_size, pairs, forbidden,
+                                    /*use_native=*/true),
+              "", &native_solutions);
+
+          absl::btree_set<std::vector<int>> table_solutions;
+          const CpSolverResponse tables = SolveAndCheck(
+              BuildTransitionsModel(num_vars, domain_size, pairs, forbidden,
+                                    /*use_native=*/false),
+              "", &table_solutions);
+
+          SCOPED_TRACE(absl::StrCat("forbidden=", forbidden,
+                                    " num_vars=", num_vars,
+                                    " domain_size=", domain_size,
+                                    " trial=", trial));
+          EXPECT_EQ(native.status(), tables.status());
+          EXPECT_EQ(native_solutions, table_solutions);
+          EXPECT_EQ(native_solutions, expected);
+        }
+      }
+    }
+  }
+}
+
+TEST(TransitionsExpandTest, NoForbiddenPairsIsTriviallyTrue) {
+  const CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { name: 'x' domain: 0 domain: 2 }
+    variables { name: 'y' domain: 0 domain: 2 }
+    constraints {
+      transitions {
+        exprs { vars: 0 coeffs: 1 }
+        exprs { vars: 1 coeffs: 1 }
+        forbidden {}
+      }
+    }
+  )pb");
+  absl::btree_set<std::vector<int>> solutions;
+  const CpSolverResponse response = SolveAndCheck(initial_model, "", &solutions);
+  EXPECT_EQ(OPTIMAL, response.status());
+  EXPECT_EQ(9, solutions.size());
+}
+
+TEST(TransitionsExpandTest, NoAllowedPairsIsInfeasible) {
+  const CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { name: 'x' domain: 0 domain: 2 }
+    variables { name: 'y' domain: 0 domain: 2 }
+    constraints {
+      transitions {
+        exprs { vars: 0 coeffs: 1 }
+        exprs { vars: 1 coeffs: 1 }
+        allowed {}
+      }
+    }
+  )pb");
+  const CpSolverResponse response = SolveAndCheck(initial_model);
+  EXPECT_EQ(INFEASIBLE, response.status());
+}
+
+TEST(TransitionsExpandTest, SingleExpressionIsTriviallyTrue) {
+  const CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { name: 'x' domain: 0 domain: 2 }
+    constraints {
+      transitions {
+        exprs { vars: 0 coeffs: 1 }
+        allowed { pairs: 0 pairs: 0 }
+      }
+    }
+  )pb");
+  absl::btree_set<std::vector<int>> solutions;
+  const CpSolverResponse response = SolveAndCheck(initial_model, "", &solutions);
+  EXPECT_EQ(OPTIMAL, response.status());
+  EXPECT_EQ(3, solutions.size());
+}
+
+TEST(TransitionsExpandTest, AffineExpressions) {
+  // exprs are 2x, 2y+1 over x, y in [0, 2]. Forbidding (2, 3) means
+  // x != 1 or y != 1. The pair (1, 1) is unreachable by 2x and must be dropped.
+  const CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { name: 'x' domain: 0 domain: 2 }
+    variables { name: 'y' domain: 0 domain: 2 }
+    constraints {
+      transitions {
+        exprs { vars: 0 coeffs: 2 }
+        exprs { vars: 1 coeffs: 2 offset: 1 }
+        forbidden { pairs: 2 pairs: 3 pairs: 1 pairs: 1 }
+      }
+    }
+  )pb");
+  absl::btree_set<std::vector<int>> solutions;
+  const CpSolverResponse response = SolveAndCheck(initial_model, "", &solutions);
+  EXPECT_EQ(OPTIMAL, response.status());
+  EXPECT_EQ(8, solutions.size());  // 9 minus (x, y) == (1, 1).
+}
+
+TEST(TransitionsExpandTest, AllowedWithEnforcementLiteral) {
+  // Exercises the fallback path: AddSizeTwoTable() does not take enforcement.
+  const CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { name: 'b' domain: 0 domain: 1 }
+    variables { name: 'x' domain: 0 domain: 1 }
+    variables { name: 'y' domain: 0 domain: 1 }
+    constraints {
+      enforcement_literal: 0
+      transitions {
+        exprs { vars: 1 coeffs: 1 }
+        exprs { vars: 2 coeffs: 1 }
+        allowed { pairs: 0 pairs: 1 pairs: 1 pairs: 0 }
+      }
+    }
+  )pb");
+  absl::btree_set<std::vector<int>> solutions;
+  const CpSolverResponse response = SolveAndCheck(initial_model, "", &solutions);
+  EXPECT_EQ(OPTIMAL, response.status());
+  // b = 0: all 4 (x, y). b = 1: only (0,1) and (1,0).
+  EXPECT_EQ(6, solutions.size());
+}
+
+TEST(TransitionsExpandTest, ForbiddenWithEnforcementLiteral) {
+  const CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { name: 'b' domain: 0 domain: 1 }
+    variables { name: 'x' domain: 0 domain: 1 }
+    variables { name: 'y' domain: 0 domain: 1 }
+    constraints {
+      enforcement_literal: 0
+      transitions {
+        exprs { vars: 1 coeffs: 1 }
+        exprs { vars: 2 coeffs: 1 }
+        forbidden { pairs: 0 pairs: 0 }
+      }
+    }
+  )pb");
+  absl::btree_set<std::vector<int>> solutions;
+  const CpSolverResponse response = SolveAndCheck(initial_model, "", &solutions);
+  EXPECT_EQ(OPTIMAL, response.status());
+  EXPECT_EQ(7, solutions.size());
+}
+
+TEST(TransitionsExpandTest, FixedVariablesMakeItInfeasible) {
+  const CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { name: 'x' domain: 1 domain: 1 }
+    variables { name: 'y' domain: 2 domain: 2 }
+    constraints {
+      transitions {
+        exprs { vars: 0 coeffs: 1 }
+        exprs { vars: 1 coeffs: 1 }
+        forbidden { pairs: 1 pairs: 2 }
+      }
+    }
+  )pb");
+  const CpSolverResponse response = SolveAndCheck(initial_model);
+  EXPECT_EQ(INFEASIBLE, response.status());
+}
+
+// A chain long enough that the allowed form must propagate along it: only the
+// value 0 has a support at every step.
+TEST(TransitionsExpandTest, AllowedChainPropagates) {
+  const CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { name: 'a' domain: 0 domain: 2 }
+    variables { name: 'b' domain: 0 domain: 2 }
+    variables { name: 'c' domain: 0 domain: 2 }
+    variables { name: 'd' domain: 0 domain: 2 }
+    constraints {
+      transitions {
+        exprs { vars: 0 coeffs: 1 }
+        exprs { vars: 1 coeffs: 1 }
+        exprs { vars: 2 coeffs: 1 }
+        exprs { vars: 3 coeffs: 1 }
+        allowed { pairs: 0 pairs: 0 pairs: 1 pairs: 2 pairs: 2 pairs: 1 }
+      }
+    }
+  )pb");
+  absl::btree_set<std::vector<int>> solutions;
+  const CpSolverResponse response = SolveAndCheck(initial_model, "", &solutions);
+  EXPECT_EQ(OPTIMAL, response.status());
+  // 0->0->0->0, and 1->2->1->2, 2->1->2->1.
+  EXPECT_EQ(3, solutions.size());
 }
 
 TEST(ReservoirExpandTest, NoOptionalAndInitiallyFeasible) {

@@ -519,6 +519,28 @@ std::string ValidateInverseConstraint(const CpModelProto& model,
   return "";
 }
 
+std::string ValidateTransitionsConstraint(const CpModelProto& model,
+                                          const ConstraintProto& ct) {
+  const TransitionsConstraintProto& arg = ct.transitions();
+  if (arg.pairs_case() == TransitionsConstraintProto::PAIRS_NOT_SET) {
+    return absl::StrCat(
+        "One of forbidden / allowed must be set in a transitions constraint: ",
+        ProtobufShortDebugString(ct));
+  }
+  const auto& flat = arg.has_forbidden() ? arg.forbidden().pairs()
+                                         : arg.allowed().pairs();
+  if (flat.size() % 2 != 0) {
+    return absl::StrCat(
+        "The flat encoding of the pairs of a transitions constraint must have "
+        "an even size: ",
+        ProtobufShortDebugString(ct));
+  }
+  for (const LinearExpressionProto& expr : arg.exprs()) {
+    RETURN_IF_NOT_EMPTY(ValidateLinearExpression(model, expr));
+  }
+  return "";
+}
+
 std::string ValidateTableConstraint(const CpModelProto& model,
                                     const ConstraintProto& ct) {
   const TableConstraintProto& arg = ct.table();
@@ -1172,6 +1194,9 @@ std::string ValidateCpModel(const CpModelProto& model, bool after_presolve) {
       case ConstraintProto::ConstraintCase::kAutomaton:
         RETURN_IF_NOT_EMPTY(ValidateAutomatonConstraint(model, ct));
         break;
+      case ConstraintProto::ConstraintCase::kTransitions:
+        RETURN_IF_NOT_EMPTY(ValidateTransitionsConstraint(model, ct));
+        break;
       case ConstraintProto::ConstraintCase::kCircuit:
         RETURN_IF_NOT_EMPTY(
             ValidateGraphInput(/*is_route=*/false, ct.circuit()));
@@ -1598,6 +1623,32 @@ class ConstraintChecker {
     return ct.table().negated();
   }
 
+  bool TransitionsConstraintIsFeasible(const ConstraintProto& ct) {
+    const TransitionsConstraintProto& arg = ct.transitions();
+    const int num_exprs = arg.exprs_size();
+    if (num_exprs < 2) return true;
+
+    const bool use_forbidden = arg.has_forbidden();
+    const auto& flat_pairs =
+        use_forbidden ? arg.forbidden().pairs() : arg.allowed().pairs();
+    if (use_forbidden && flat_pairs.empty()) return true;
+
+    absl::flat_hash_set<std::pair<int64_t, int64_t>> pairs;
+    for (int i = 0; i + 1 < flat_pairs.size(); i += 2) {
+      pairs.insert({flat_pairs[i], flat_pairs[i + 1]});
+    }
+
+    int64_t previous = LinearExpressionValue(arg.exprs(0));
+    for (int i = 1; i < num_exprs; ++i) {
+      const int64_t current = LinearExpressionValue(arg.exprs(i));
+      // Infeasible when the pair is forbidden and listed, or allowed and not
+      // listed.
+      if (pairs.contains({previous, current}) == use_forbidden) return false;
+      previous = current;
+    }
+    return true;
+  }
+
   bool AutomatonConstraintIsFeasible(const ConstraintProto& ct) {
     // Build the transition table {tail, label} -> head.
     const AutomatonConstraintProto& automaton = ct.automaton();
@@ -1864,6 +1915,8 @@ class ConstraintChecker {
         return TableConstraintIsFeasible(ct);
       case ConstraintProto::ConstraintCase::kAutomaton:
         return AutomatonConstraintIsFeasible(ct);
+      case ConstraintProto::ConstraintCase::kTransitions:
+        return TransitionsConstraintIsFeasible(ct);
       case ConstraintProto::ConstraintCase::kCircuit:
         return CircuitConstraintIsFeasible(ct);
       case ConstraintProto::ConstraintCase::kRoutes:
