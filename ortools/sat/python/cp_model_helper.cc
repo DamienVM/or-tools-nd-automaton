@@ -592,6 +592,10 @@ class CpBaseModel : public std::enable_shared_from_this<CpBaseModel> {
       py::sequence exprs, const std::vector<std::vector<int64_t>>& tuples,
       bool negated);
 
+  std::shared_ptr<Constraint> AddTransitionsInternal(
+      py::sequence exprs, const std::vector<std::vector<int64_t>>& pairs,
+      bool forbidden);
+
   std::shared_ptr<IntervalVar> NewIntervalVarInternal(const std::string& name,
                                                       const py::handle& start,
                                                       const py::handle& size,
@@ -861,6 +865,29 @@ std::shared_ptr<Constraint> CpBaseModel::AddTableInternal(
     ct->mutable_table()->mutable_values()->Add(tuple.begin(), tuple.end());
   }
   ct->mutable_table()->set_negated(negated);
+  return std::make_shared<Constraint>(shared_from_this(), ct_index);
+}
+
+std::shared_ptr<Constraint> CpBaseModel::AddTransitionsInternal(
+    py::sequence exprs, const std::vector<std::vector<int64_t>>& pairs,
+    bool forbidden) {
+  const int ct_index = model_proto_->constraints_size();
+  ConstraintProto* ct = model_proto_->add_constraints();
+  TransitionsConstraintProto* proto = ct->mutable_transitions();
+  for (const auto& expr : exprs) {
+    LinearExprToProto(expr, 1, proto->add_exprs());
+  }
+  ValuePairsProto* list =
+      forbidden ? proto->mutable_forbidden() : proto->mutable_allowed();
+  for (const auto& pair : pairs) {
+    if (pair.size() != 2) {
+      ThrowError(PyExc_ValueError,
+                 absl::StrCat("Transition pair (", absl::StrJoin(pair, ","),
+                              ") must have exactly 2 values"));
+    }
+    list->add_pairs(pair[0]);
+    list->add_pairs(pair[1]);
+  }
   return std::make_shared<Constraint>(shared_from_this(), ct_index);
 }
 
@@ -1946,6 +1973,8 @@ PYBIND11_MODULE(cp_model_helper, m) {
            py::arg("min_level"), py::arg("max_level"))
       .def("_add_table", &CpBaseModel::AddTableInternal, py::arg("expressions"),
            py::arg("values"), py::arg("negated"))
+      .def("_add_transitions", &CpBaseModel::AddTransitionsInternal,
+           py::arg("expressions"), py::arg("pairs"), py::arg("forbidden"))
       // Scheduling support.
       .def("_new_interval_var", &CpBaseModel::NewIntervalVarInternal,
            py::arg("name"), py::arg("start"), py::arg("size"), py::arg("end"),

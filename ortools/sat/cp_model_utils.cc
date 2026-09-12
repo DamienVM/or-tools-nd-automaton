@@ -219,6 +219,12 @@ void GetReferencesUsedByConstraint(const ConstraintProto& ct,
         }
       }
       break;
+    case ConstraintProto::ConstraintCase::kTransitions:
+      for (const LinearExpressionProto& expr :
+           ct.transitions().exprs()) {
+        AddIndices(expr.vars(), variables);
+      }
+      break;
     case ConstraintProto::ConstraintCase::kInterval:
       AddIndices(ct.interval().start().vars(), variables);
       AddIndices(ct.interval().size().vars(), variables);
@@ -300,6 +306,8 @@ void ApplyToAllLiteralIndices(absl::FunctionRef<void(int*)> f,
     case ConstraintProto::ConstraintCase::kTable:
       break;
     case ConstraintProto::ConstraintCase::kAutomaton:
+      break;
+    case ConstraintProto::ConstraintCase::kTransitions:
       break;
     case ConstraintProto::ConstraintCase::kInterval:
       break;
@@ -412,6 +420,12 @@ void ApplyToAllVariableIndices(absl::FunctionRef<void(int*)> f,
         }
       }
       break;
+    case ConstraintProto::ConstraintCase::kTransitions:
+      for (int i = 0; i < ct->transitions().exprs_size(); ++i) {
+        APPLY_TO_REPEATED_FIELD(transitions,
+                                exprs(i)->mutable_vars);
+      }
+      break;
     case ConstraintProto::ConstraintCase::kInterval:
       APPLY_TO_REPEATED_FIELD(interval, start()->mutable_vars);
       APPLY_TO_REPEATED_FIELD(interval, size()->mutable_vars);
@@ -476,6 +490,8 @@ void ApplyToAllIntervalIndices(absl::FunctionRef<void(int*)> f,
       break;
     case ConstraintProto::ConstraintCase::kAutomaton:
       break;
+    case ConstraintProto::ConstraintCase::kTransitions:
+      break;
     case ConstraintProto::ConstraintCase::kInterval:
       break;
     case ConstraintProto::ConstraintCase::kNoOverlap:
@@ -537,6 +553,8 @@ absl::string_view ConstraintCaseName(
       return "kTable";
     case ConstraintProto::ConstraintCase::kAutomaton:
       return "kAutomaton";
+    case ConstraintProto::ConstraintCase::kTransitions:
+      return "kTransitions";
     case ConstraintProto::ConstraintCase::kInterval:
       return "kInterval";
     case ConstraintProto::ConstraintCase::kNoOverlap:
@@ -604,6 +622,8 @@ std::vector<int> UsedIntervals(const ConstraintProto& ct) {
     case ConstraintProto::ConstraintCase::kTable:
       break;
     case ConstraintProto::ConstraintCase::kAutomaton:
+      break;
+    case ConstraintProto::ConstraintCase::kTransitions:
       break;
     case ConstraintProto::ConstraintCase::kInterval:
       break;
@@ -868,6 +888,16 @@ uint64_t FingerprintModel(const CpModelProto& model, uint64_t seed) {
             fp = FingerprintExpression(expr, fp);
           }
         }
+        break;
+      case ConstraintProto::ConstraintCase::kTransitions:
+        for (const LinearExpressionProto& expr : ct.transitions().exprs()) {
+          fp = FingerprintExpression(expr, fp);
+        }
+        fp = FingerprintSingleField(ct.transitions().pairs_case(), fp);
+        fp = FingerprintRepeatedField(ct.transitions().has_forbidden()
+                                          ? ct.transitions().forbidden().pairs()
+                                          : ct.transitions().allowed().pairs(),
+                                      fp);
         break;
       case ConstraintProto::ConstraintCase::kInterval:
         fp = FingerprintExpression(ct.interval().start(), fp);

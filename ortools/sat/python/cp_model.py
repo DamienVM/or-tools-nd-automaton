@@ -696,6 +696,97 @@ class CpModel(cmh.CpBaseModel):
 
         return self._add_table(expressions, tuples_list, True)
 
+    def add_forbidden_transitions(
+        self,
+        expressions: Sequence[LinearExprT],
+        forbidden_pairs: Iterable[Sequence[IntegralT]],
+    ) -> Constraint:
+        """Adds add_forbidden_transitions(expressions, forbidden_pairs).
+
+        This forbids some ordered pairs of values from appearing at consecutive
+        positions of the sequence of expressions. That is, for every i in
+        [0, len(expressions) - 2], the pair
+        (expressions[i], expressions[i + 1]) must not be one of the forbidden
+        pairs.
+
+        This is semantically identical to calling add_forbidden_assignments() on
+        each consecutive pair of expressions with the same list of pairs, but the
+        expressions and the pairs are stored once instead of once per position,
+        which matters when the list of pairs is large.
+
+        Args:
+          expressions: A list of affine expressions (a * var + b). Fewer than two
+            expressions makes the constraint trivially true.
+          forbidden_pairs: A list of forbidden (first, second) value pairs.
+
+        Returns:
+          An instance of the `Constraint` class.
+
+        Raises:
+          ValueError: If a forbidden pair does not have exactly two values.
+        """
+        return self._add_transitions(expressions, forbidden_pairs, True)
+
+    def add_allowed_transitions(
+        self,
+        expressions: Sequence[LinearExprT],
+        allowed_pairs: Iterable[Sequence[IntegralT]],
+    ) -> Constraint:
+        """Adds add_allowed_transitions(expressions, allowed_pairs).
+
+        This restricts consecutive positions of the sequence of expressions to
+        the given ordered pairs. That is, for every i in
+        [0, len(expressions) - 2], the pair
+        (expressions[i], expressions[i + 1]) must be one of the allowed pairs.
+
+        This is semantically identical to calling add_allowed_assignments() on
+        each consecutive pair of expressions with the same list of pairs, but the
+        expressions and the pairs are stored once instead of once per position,
+        which matters when the list of pairs is large.
+
+        Args:
+          expressions: A list of affine expressions (a * var + b). Fewer than two
+            expressions makes the constraint trivially true.
+          allowed_pairs: A list of allowed (first, second) value pairs. An empty
+            list makes the constraint infeasible unless there are fewer than two
+            expressions.
+
+        Returns:
+          An instance of the `Constraint` class.
+
+        Raises:
+          ValueError: If an allowed pair does not have exactly two values.
+        """
+        return self._add_transitions(expressions, allowed_pairs, False)
+
+    def add_not_after(
+        self,
+        expressions: Sequence[LinearExprT],
+        value: IntegralT,
+        values: Iterable[IntegralT],
+    ) -> Constraint:
+        """Adds: if expressions[i] == value then expressions[i + 1] not in values.
+
+        Sugar over add_forbidden_transitions().
+        """
+        return self.add_forbidden_transitions(
+            expressions, [(value, v) for v in values]
+        )
+
+    def add_not_before(
+        self,
+        expressions: Sequence[LinearExprT],
+        value: IntegralT,
+        values: Iterable[IntegralT],
+    ) -> Constraint:
+        """Adds: if expressions[i] == value then expressions[i - 1] not in values.
+
+        Sugar over add_forbidden_transitions().
+        """
+        return self.add_forbidden_transitions(
+            expressions, [(v, value) for v in values]
+        )
+
     def add_automaton(
         self,
         transition_expressions: Sequence[LinearExprT],

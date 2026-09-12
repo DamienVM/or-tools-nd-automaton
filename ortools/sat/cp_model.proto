@@ -301,12 +301,45 @@ message AutomatonConstraintProto {
   repeated LinearExpressionProto exprs = 8;
 }
 
+// A flat list of ordered value pairs: [first_0, second_0, first_1, ...].
+// The size must be even. Duplicate pairs are allowed and ignored.
+message ValuePairsProto {
+  repeated int64 pairs = 1;
+}
+
+// This constraint restricts which ordered pairs of values may appear at
+// consecutive positions of a sequence of expressions.
+//
+// For every i in [0, exprs_size() - 2], writing p = (exprs(i), exprs(i + 1)):
+//   - with forbidden: p must not be one of the listed pairs;
+//   - with allowed:   p must be one of the listed pairs.
+//
+// The two are in a oneof so that an empty list is unambiguous: an empty
+// `forbidden` forbids nothing (trivially true), while an empty `allowed` allows
+// nothing (infeasible as soon as there are at least two expressions).
+//
+// This is semantically identical to posting one TableConstraintProto (negated
+// in the `forbidden` case) on each consecutive pair (exprs(i), exprs(i + 1))
+// with the same tuples. The point of this constraint is that the pair list and
+// the expressions are stored once instead of once per position, which matters
+// when the pair list is large.
+message TransitionsConstraintProto {
+  // The sequence of expressions. A constraint with fewer than two expressions
+  // is trivially true.
+  repeated LinearExpressionProto exprs = 1;
+
+  oneof pairs {
+    ValuePairsProto forbidden = 2;
+    ValuePairsProto allowed = 3;
+  }
+}
+
 // A list of variables, without any semantics.
 message ListOfVariablesProto {
   repeated int32 vars = 1;
 }
 
-// Next id: 31
+// Next id: 32
 message ConstraintProto {
   // For debug/logging only. Can be empty.
   string name = 1;
@@ -450,6 +483,10 @@ message ConstraintProto {
     // of the demands of the intervals containing that point does not exceed
     // the capacity.
     CumulativeConstraintProto cumulative = 22;
+
+    // The transitions constraint restricts which ordered pairs of values may
+    // appear at consecutive positions of a sequence of expressions.
+    TransitionsConstraintProto transitions = 31;
 
     // This constraint is not meant to be used and will be rejected by the
     // solver. It is meant to mark variable when testing the presolve code.

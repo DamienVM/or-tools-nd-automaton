@@ -1670,6 +1670,203 @@ bool TableIsInCanonicalForm(ConstraintProto* ct) {
   return true;
 }
 
+// Defined below; the transitions expansion reuses it for its `allowed` form.
+void AddSizeTwoTable(
+    absl::Span<const int> vars, absl::Span<const std::vector<int64_t>> tuples,
+    absl::Span<const absl::flat_hash_set<int64_t>> values_per_var,
+    PresolveContext* context);
+
+// Maps `value` of `expr` back onto its inner variable. Returns false when the
+// value is not reachable by the affine expression, or is not in the variable's
+// current domain -- in both cases the pair using it is inert at this position.
+// Sets *is_fixed when the expression is constant (or its variable is fixed) and
+// equal to the value; then no literal is needed, the equality always holds.
+bool TransitionInnerValue(const LinearExpressionProto& expr, int64_t value,
+                          PresolveContext* context, int64_t* inner_value,
+                          bool* is_fixed) {
+  *is_fixed = false;
+  if (expr.vars().empty()) {
+    if (expr.offset() != value) return false;
+    *is_fixed = true;
+    return true;
+  }
+  DCHECK_EQ(expr.vars_size(), 1);
+  const int64_t coeff = expr.coeffs(0);
+  const int64_t shifted = value - expr.offset();
+  if (coeff == 0 || shifted % coeff != 0) return false;
+  *inner_value = shifted / coeff;
+  if (!context->DomainOf(expr.vars(0)).Contains(*inner_value)) return false;
+  if (context->DomainOf(expr.vars(0)).IsFixed()) *is_fixed = true;
+  return true;
+}
+
+// Expands the `forbidden` form into binary clauses over the value encoding
+// literals of consecutive expressions. This produces exactly what posting one
+// negated table per consecutive pair would produce (see ExpandNegativeTable);
+// the difference is that the pair list and the expression list are stored once
+// in the model instead of once per position.
+void ExpandForbiddenTransitions(ConstraintProto* ct,
+                                PresolveContext* context) {
+  const TransitionsConstraintProto& proto = ct->transitions();
+  const auto& flat_pairs = proto.forbidden().pairs();
+  const int num_exprs = proto.exprs_size();
+
+  int num_clauses = 0;
+  for (int i = 0; i + 1 < num_exprs; ++i) {
+    for (int p = 0; p + 1 < flat_pairs.size(); p += 2) {
+      int64_t first_inner = 0;
+      int64_t second_inner = 0;
+      bool first_is_fixed = false;
+      bool second_is_fixed = false;
+      if (!TransitionInnerValue(proto.exprs(i), flat_pairs[p], context,
+                                &first_inner, &first_is_fixed)) {
+        continue;
+      }
+      if (!TransitionInnerValue(proto.exprs(i + 1), flat_pairs[p + 1], context,
+                                &second_inner, &second_is_fixed)) {
+        continue;
+      }
+
+      // Note that an empty clause means the model is infeasible, which is the
+      // correct outcome when both sides are fixed to a forbidden pair.
+      ConstraintProto* clause = context->AddEnforcedConstraint(ct);
+      BoolArgumentProto* bool_or = clause->mutable_bool_or();
+      if (!first_is_fixed) {
+        bool_or->add_literals(NegatedRef(
+            context->GetOrCreateVarValueEncoding(proto.exprs(i).vars(0),
+                                                 first_inner)));
+      }
+      if (!second_is_fixed) {
+        bool_or->add_literals(NegatedRef(
+            context->GetOrCreateVarValueEncoding(proto.exprs(i + 1).vars(0),
+                                                 second_inner)));
+      }
+      ++num_clauses;
+    }
+  }
+
+  VLOG(3) << "transitions: " << num_exprs << " expressions, "
+          << flat_pairs.size() / 2 << " forbidden pairs encoded using "
+          << num_clauses << " clauses.";
+  context->UpdateRuleStats("transitions: expanded forbidden constraint");
+  ct->Clear();
+}
+
+// Expands the `allowed` form. Per position this is exactly a positive table on
+// two variables, so we reuse AddSizeTwoTable(), which emits per-value support
+// clauses (~2 * domain size per position) rather than one clause per pair --
+// far smaller than complementing the relation would be.
+//
+// Falls back to emitting one positive TableConstraintProto per position in the
+// cases AddSizeTwoTable() does not cover (enforcement literals, table costs,
+// non-variable expressions). Those constraints are appended to the working
+// model and picked up later by this same expansion loop.
+void ExpandAllowedTransitions(ConstraintProto* ct, PresolveContext* context) {
+  const TransitionsConstraintProto& proto = ct->transitions();
+  const auto& flat_pairs = proto.allowed().pairs();
+  const int num_exprs = proto.exprs_size();
+
+  bool all_exprs_are_vars = true;
+  for (const LinearExpressionProto& expr : proto.exprs()) {
+    if (expr.vars().empty()) all_exprs_are_vars = false;
+  }
+  const bool use_fast_path = ct->enforcement_literal().empty() &&
+                             !context->params().detect_table_with_cost() &&
+                             all_exprs_are_vars;
+
+  if (!use_fast_path) {
+    for (int i = 0; i + 1 < num_exprs; ++i) {
+      ConstraintProto* table_ct = context->AddEnforcedConstraint(ct);
+      TableConstraintProto* table = table_ct->mutable_table();
+      *table->add_exprs() = proto.exprs(i);
+      *table->add_exprs() = proto.exprs(i + 1);
+      for (const int64_t v : flat_pairs) table->add_values(v);
+    }
+    context->UpdateRuleStats("transitions: allowed constraint split in tables");
+    ct->Clear();
+    return;
+  }
+
+  // Left to right, mirroring ExpandPositiveTable(): filter the pairs against
+  // the current domains, tighten both domains to the surviving values, then
+  // emit. A single forward pass is enough for correctness -- clauses emitted
+  // earlier stay sound if a domain shrinks later -- and presolve will propagate
+  // the rest.
+  std::vector<std::vector<int64_t>> tuples;
+  std::vector<absl::flat_hash_set<int64_t>> values_per_var(2);
+  for (int i = 0; i + 1 < num_exprs; ++i) {
+    const std::vector<int> vars = {proto.exprs(i).vars(0),
+                                   proto.exprs(i + 1).vars(0)};
+    tuples.clear();
+    values_per_var[0].clear();
+    values_per_var[1].clear();
+    for (int p = 0; p + 1 < flat_pairs.size(); p += 2) {
+      int64_t first_inner = 0;
+      int64_t second_inner = 0;
+      bool unused = false;
+      if (!TransitionInnerValue(proto.exprs(i), flat_pairs[p], context,
+                                &first_inner, &unused)) {
+        continue;
+      }
+      if (!TransitionInnerValue(proto.exprs(i + 1), flat_pairs[p + 1], context,
+                                &second_inner, &unused)) {
+        continue;
+      }
+      tuples.push_back({first_inner, second_inner});
+      values_per_var[0].insert(first_inner);
+      values_per_var[1].insert(second_inner);
+    }
+
+    if (tuples.empty()) {
+      context->UpdateRuleStats("transitions: allowed constraint is empty");
+      return (void)context->NotifyThatModelIsUnsat();
+    }
+
+    for (int k = 0; k < 2; ++k) {
+      if (!context->IntersectDomainWith(
+              vars[k], Domain::FromValues({values_per_var[k].begin(),
+                                           values_per_var[k].end()}))) {
+        return;
+      }
+    }
+
+    // If one side is fixed, the domain tightening above already enforced
+    // everything this position has to say.
+    if (context->DomainOf(vars[0]).IsFixed() ||
+        context->DomainOf(vars[1]).IsFixed()) {
+      continue;
+    }
+    AddSizeTwoTable(vars, tuples, values_per_var, context);
+  }
+
+  VLOG(3) << "transitions: " << num_exprs << " expressions, "
+          << flat_pairs.size() / 2 << " allowed pairs.";
+  context->UpdateRuleStats("transitions: expanded allowed constraint");
+  ct->Clear();
+}
+
+void ExpandTransitions(ConstraintProto* ct, PresolveContext* context) {
+  const TransitionsConstraintProto& proto = ct->transitions();
+  const int num_exprs = proto.exprs_size();
+
+  // Fewer than two expressions: nothing relates, trivially true.
+  if (num_exprs < 2) {
+    context->UpdateRuleStats("transitions: trivially true");
+    ct->Clear();
+    return;
+  }
+  if (proto.has_forbidden()) {
+    if (proto.forbidden().pairs().empty()) {
+      context->UpdateRuleStats("transitions: nothing forbidden");
+      ct->Clear();
+      return;
+    }
+    ExpandForbiddenTransitions(ct, context);
+  } else {
+    ExpandAllowedTransitions(ct, context);
+  }
+}
+
 void ExpandNegativeTable(ConstraintProto* ct, PresolveContext* context) {
   DCHECK(TableIsInCanonicalForm(ct));
   TableConstraintProto& table = *ct->mutable_table();
@@ -2672,6 +2869,9 @@ void ScanModelAndDecideAllDiffExpansion(
           case ConstraintProto::ConstraintCase::kAutomaton:
             domain_is_used = true;
             break;
+          case ConstraintProto::ConstraintCase::kTransitions:
+            domain_is_used = true;
+            break;
           case ConstraintProto::ConstraintCase::kInterval:
             bounds_are_used = true;
             break;
@@ -2859,6 +3059,9 @@ void ExpandCpModel(PresolveContext* context) {
         break;
       case ConstraintProto::kAutomaton:
         ExpandAutomaton(ct, context);
+        break;
+      case ConstraintProto::kTransitions:
+        ExpandTransitions(ct, context);
         break;
       case ConstraintProto::kTable:
         if (!context->params().cp_model_presolve() ||
