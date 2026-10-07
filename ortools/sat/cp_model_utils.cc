@@ -662,6 +662,24 @@ bool ExpressionContainsSingleRef(const LinearExpressionProto& expr) {
          std::abs(expr.coeffs(0)) == 1;
 }
 
+bool AutomatonIsDeterministic(const AutomatonConstraintProto& automaton) {
+  absl::flat_hash_set<std::pair<int64_t, int64_t>> tail_labels;
+  for (int i = 0; i < automaton.transition_tail_size(); ++i) {
+    if (!tail_labels
+             .insert({automaton.transition_tail(i),
+                      automaton.transition_label(i)})
+             .second) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool AutomatonRunEncodingHasDuplicates(const ConstraintProto& ct) {
+  return !ct.enforcement_literal().empty() ||
+         !AutomatonIsDeterministic(ct.automaton());
+}
+
 bool ExpressionIsAffine(const LinearExpressionProto& expr) {
   return expr.vars_size() <= 1;
 }

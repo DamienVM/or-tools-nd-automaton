@@ -1077,6 +1077,7 @@ cc_library(
     deps = [
         ":2d_distances_propagator",
         ":all_different",
+        ":automaton",
         ":circuit",
         ":clause",
         ":cp_constraints",
@@ -4025,6 +4026,22 @@ cc_test(
         "//ortools/base:gmock_main",
         "//ortools/base:logging",
         "@abseil-cpp//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "automaton",
+    srcs = ["automaton.cc"],
+    hdrs = ["automaton.h"],
+    deps = [
+        ":enforcement",
+        ":enforcement_helper",
+        ":integer",
+        ":model",
+        ":sat_base",
+        "//ortools/base:stl_util",
+        "@abseil-cpp//absl/log:check",
+        "@abseil-cpp//absl/types:span",
     ],
 )
 

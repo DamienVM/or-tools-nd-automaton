@@ -35,6 +35,7 @@
 #include "ortools/base/stl_util.h"
 #include "ortools/base/strong_vector.h"
 #include "ortools/sat/all_different.h"
+#include "ortools/sat/automaton.h"
 #include "ortools/sat/circuit.h"
 #include "ortools/sat/clause.h"
 #include "ortools/sat/cp_constraints.h"
@@ -1692,6 +1693,94 @@ void LoadRoutesConstraint(const ConstraintProto& ct, Model* m) {
                            /*multiple_subcircuit_through_zero=*/true);
 }
 
+void LoadAutomatonConstraint(const ConstraintProto& ct, Model* m) {
+  const AutomatonConstraintProto& automaton = ct.automaton();
+  auto* mapping = m->GetOrCreate<CpModelMapping>();
+  auto* encoder = m->GetOrCreate<IntegerEncoder>();
+  auto* sat_solver = m->GetOrCreate<SatSolver>();
+
+  // Legacy models use vars instead of exprs.
+  std::vector<LinearExpressionProto> exprs(automaton.exprs().begin(),
+                                           automaton.exprs().end());
+  for (const int ref : automaton.vars()) {
+    LinearExpressionProto expr;
+    expr.add_vars(PositiveRef(ref));
+    expr.add_coeffs(RefIsPositive(ref) ? 1 : -1);
+    exprs.push_back(expr);
+  }
+  const std::vector<Literal> enforcement_literals =
+      mapping->Literals(ct.enforcement_literal());
+
+  if (exprs.empty()) {
+    for (const int64_t f : automaton.final_states()) {
+      if (f == automaton.starting_state()) return;
+    }
+    // Not accepted: the enforcement must be false.
+    std::vector<Literal> clause;
+    for (const Literal l : enforcement_literals) clause.push_back(l.Negated());
+    sat_solver->AddProblemClause(clause);
+    return;
+  }
+
+  // Reindex states and labels.
+  absl::flat_hash_map<int64_t, int> state_index;
+  absl::flat_hash_map<int64_t, int> label_index;
+  std::vector<int64_t> label_values;
+  const auto get_state = [&state_index](int64_t state) {
+    return state_index.insert({state, state_index.size()}).first->second;
+  };
+  const int starting_state = get_state(automaton.starting_state());
+  std::vector<int> tails, labels, heads;
+  for (int i = 0; i < automaton.transition_tail_size(); ++i) {
+    tails.push_back(get_state(automaton.transition_tail(i)));
+    heads.push_back(get_state(automaton.transition_head(i)));
+    const int64_t label = automaton.transition_label(i);
+    auto [it, inserted] = label_index.insert({label, label_values.size()});
+    if (inserted) label_values.push_back(label);
+    labels.push_back(it->second);
+  }
+  std::vector<int> final_states;
+  for (const int64_t f : automaton.final_states()) {
+    final_states.push_back(get_state(f));
+  }
+
+  // The literals (exprs[t] == label).
+  const int num_labels = label_values.size();
+  std::vector<Literal> label_literals;
+  for (const LinearExpressionProto& expr : exprs) {
+    for (const int64_t label : label_values) {
+      if (expr.vars().empty()) {
+        label_literals.push_back(label == expr.offset()
+                                     ? encoder->GetTrueLiteral()
+                                     : encoder->GetFalseLiteral());
+        continue;
+      }
+      const int var = expr.vars(0);
+      const int64_t coeff = expr.coeffs(0);
+      if (coeff == 0 || (label - expr.offset()) % coeff != 0) {
+        label_literals.push_back(label == expr.offset() && coeff == 0
+                                     ? encoder->GetTrueLiteral()
+                                     : encoder->GetFalseLiteral());
+        continue;
+      }
+      const int64_t value = (label - expr.offset()) / coeff;
+      if (mapping->IsBoolean(var)) {
+        const Literal lit = mapping->Literal(var);
+        label_literals.push_back(value == 1   ? lit
+                                 : value == 0 ? lit.Negated()
+                                              : encoder->GetFalseLiteral());
+      } else {
+        label_literals.push_back(encoder->GetOrCreateLiteralAssociatedToEquality(
+            mapping->Integer(var), IntegerValue(value)));
+      }
+    }
+  }
+
+  m->TakeOwnership(new AutomatonPropagator(
+      state_index.size(), starting_state, final_states, tails, labels, heads,
+      num_labels, label_literals, enforcement_literals, m));
+}
+
 bool LoadConstraint(const ConstraintProto& ct, Model* m) {
   switch (ct.constraint_case()) {
     case ConstraintProto::ConstraintCase::CONSTRAINT_NOT_SET:
@@ -1749,6 +1838,9 @@ bool LoadConstraint(const ConstraintProto& ct, Model* m) {
       return true;
     case ConstraintProto::ConstraintProto::kRoutes:
       LoadRoutesConstraint(ct, m);
+      return true;
+    case ConstraintProto::ConstraintProto::kAutomaton:
+      LoadAutomatonConstraint(ct, m);
       return true;
     default:
       return false;

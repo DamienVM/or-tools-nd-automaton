@@ -1019,6 +1019,50 @@ int64_t CompiledBoolXorConstraint::ViolationDeltaWhenEnforced(
   return violation() == 0 ? 1 : -1;
 }
 
+// ----- CompiledAutomatonConstraint -----
+
+CompiledAutomatonConstraint::CompiledAutomatonConstraint(
+    const ConstraintProto& ct_proto)
+    : CompiledConstraintWithProto(ct_proto) {
+  const AutomatonConstraintProto& automaton = ct_proto.automaton();
+  for (int i = 0; i < automaton.transition_tail_size(); ++i) {
+    transitions_[{automaton.transition_tail(i), automaton.transition_label(i)}]
+        .push_back(automaton.transition_head(i));
+  }
+  final_states_.insert(automaton.final_states().begin(),
+                       automaton.final_states().end());
+  exprs_.assign(automaton.exprs().begin(), automaton.exprs().end());
+  for (const int ref : automaton.vars()) {
+    LinearExpressionProto expr;
+    expr.add_vars(PositiveRef(ref));
+    expr.add_coeffs(RefIsPositive(ref) ? 1 : -1);
+    exprs_.push_back(expr);
+  }
+}
+
+int64_t CompiledAutomatonConstraint::ComputeViolationWhenEnforced(
+    absl::Span<const int64_t> solution) {
+  const int n = exprs_.size();
+  states_ = {ct_proto().automaton().starting_state()};
+  for (int t = 0; t < n; ++t) {
+    const int64_t label = ExprValue(exprs_[t], solution);
+    next_states_.clear();
+    for (const int64_t state : states_) {
+      const auto it = transitions_.find({state, label});
+      if (it == transitions_.end()) continue;
+      next_states_.insert(next_states_.end(), it->second.begin(),
+                          it->second.end());
+    }
+    gtl::STLSortAndRemoveDuplicates(&next_states_);
+    if (next_states_.empty()) return n - t + 1;
+    std::swap(states_, next_states_);
+  }
+  for (const int64_t state : states_) {
+    if (final_states_.contains(state)) return 0;
+  }
+  return 1;
+}
+
 // ----- CompiledLinMaxConstraint -----
 
 CompiledLinMaxConstraint::CompiledLinMaxConstraint(
@@ -1872,6 +1916,9 @@ void LsEvaluator::CompileOneConstraint(const ConstraintProto& ct) {
       }
       break;
     }
+    case ConstraintProto::ConstraintCase::kAutomaton:
+      constraints_.emplace_back(new CompiledAutomatonConstraint(ct));
+      break;
     case ConstraintProto::ConstraintCase::kCircuit:
     case ConstraintProto::ConstraintCase::kRoutes:
       constraints_.emplace_back(new CompiledCircuitConstraint(ct));

@@ -822,7 +822,11 @@ class CpModel(cmh.CpBaseModel):
 
         The automaton can be non-deterministic: several transitions can share the
         same (*tail*, *transition*) pair. As the definition above says, it is
-        enough for one such path to exist.
+        enough for one such path to exist. The `nfa_automaton_mode` solver
+        parameter selects how such automata are handled; with the default run
+        encoding, a sequence accepted by k paths is reported k times when
+        enumerating all solutions, while NFA_REACHABLE_SET_ENCODING and
+        NFA_PROPAGATOR report it once.
 
         Args:
           transition_expressions: A non-empty list of affine expressions (a * var +

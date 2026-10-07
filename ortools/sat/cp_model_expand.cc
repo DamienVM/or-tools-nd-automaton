@@ -1315,6 +1315,150 @@ void AddImplyInReachableValues(absl::Span<const int> enforcement_literals,
   }
 }
 
+// Returns a literal equal to (a and b), reusing a or b when the other one is
+// fixed to true.
+int AddConjunctionLiteral(int a, int b, PresolveContext* context) {
+  if (context->LiteralIsTrue(a)) return b;
+  if (context->LiteralIsTrue(b)) return a;
+  const int result = context->NewBoolVarWithConjunction({a, b});
+  context->AddImplication(result, a);
+  context->AddImplication(result, b);
+  BoolArgumentProto* clause =
+      context->working_model->add_constraints()->mutable_bool_or();
+  clause->add_literals(NegatedRef(a));
+  clause->add_literals(NegatedRef(b));
+  clause->add_literals(result);
+  return result;
+}
+
+// Returns a literal equal to the disjunction of the given literals, reusing
+// the literal if there is only one.
+int AddDisjunctionLiteral(std::vector<int> literals, PresolveContext* context) {
+  gtl::STLSortAndRemoveDuplicates(&literals);
+  if (literals.size() == 1) return literals[0];
+  const int result = context->NewBoolVarWithClause(literals);
+  BoolArgumentProto* clause =
+      context->working_model->add_constraints()->mutable_bool_or();
+  clause->add_literals(NegatedRef(result));
+  for (const int lit : literals) {
+    clause->add_literals(lit);
+    context->AddImplication(lit, result);
+  }
+  return result;
+}
+
+// Expands a non-deterministic automaton by encoding, at each time step, the
+// set of states reachable from the starting state (an on-the-fly subset
+// construction):
+//   R[0][start] = true
+//   T[t][s, a] = R[t][s] and (exprs[t] == a)
+//   R[t + 1][h] = or of T[t][s, a] over all transitions (s, a, h)
+// and the constraint itself is: enforcement => or of R[n][f], f final.
+//
+// Unlike the run encoding of ExpandAutomaton(), several states can be reachable
+// at the same time, and all the new Booleans are functionally defined by the
+// labels (the definitions are not enforced). So a label sequence has exactly
+// one extension to the new variables even if it has several accepting runs,
+// and enumerating all solutions does not report duplicates.
+void ExpandAutomatonWithReachableSets(
+    ConstraintProto* ct, PresolveContext* context,
+    const std::vector<absl::flat_hash_set<int64_t>>& reachable_states) {
+  const AutomatonConstraintProto& proto = ct->automaton();
+  const int n = proto.exprs_size();
+  const absl::flat_hash_set<int64_t> final_states(
+      {proto.final_states().begin(), proto.final_states().end()});
+  EnforcedDomains enforced_domains(ct, context);
+  bool removed_values = false;
+
+  // Literals R[time][state] for the states of the current time step.
+  absl::flat_hash_map<int64_t, int> reachable;
+  reachable[proto.starting_state()] = context->GetTrueLiteral();
+  for (int time = 0; time < n; ++time) {
+    if (context->time_limit()->LimitReached()) return;
+    const LinearExpressionProto& expr = proto.exprs(time);
+
+    // The transitions that can still be used at this time step.
+    std::vector<int> transitions;
+    std::vector<int64_t> labels;
+    for (int i = 0; i < proto.transition_label_size(); ++i) {
+      const int64_t tail = proto.transition_tail(i);
+      const int64_t label = proto.transition_label(i);
+      const int64_t head = proto.transition_head(i);
+      if (!reachable.contains(tail)) continue;
+      if (!reachable_states[time + 1].contains(head)) continue;
+      if (time + 1 == n && !final_states.contains(head)) continue;
+      if (!enforced_domains.DomainContains(expr, label)) continue;
+      transitions.push_back(i);
+      labels.push_back(label);
+    }
+    gtl::STLSortAndRemoveDuplicates(&labels);
+    if (!enforced_domains.IntersectDomainWith(expr, Domain::FromValues(labels),
+                                              "Infeasible automaton.",
+                                              &removed_values)) {
+      return;
+    }
+
+    // The literals (exprs[time] == label).
+    absl::flat_hash_map<int64_t, int> label_literal;
+    if (enforced_domains.IsFixed(expr)) {
+      label_literal[labels.front()] = context->GetTrueLiteral();
+    } else {
+      const int var = expr.vars(0);
+      for (const int64_t v : enforced_domains.DomainOf(var).Values()) {
+        label_literal[AffineExpressionValueAt(expr, v)] =
+            context->GetOrCreateVarValueEncoding(var, v);
+      }
+    }
+
+    // T[time][tail, label], shared by all the heads of (tail, label), and the
+    // list of T literals entering each head.
+    absl::flat_hash_map<std::pair<int64_t, int64_t>, int> step_literals;
+    absl::btree_map<int64_t, std::vector<int>> head_to_step_literals;
+    for (const int i : transitions) {
+      const int64_t tail = proto.transition_tail(i);
+      const int64_t label = proto.transition_label(i);
+      auto [it, inserted] = step_literals.insert({{tail, label}, 0});
+      if (inserted) {
+        it->second = AddConjunctionLiteral(reachable.at(tail),
+                                           label_literal.at(label), context);
+      }
+      head_to_step_literals[proto.transition_head(i)].push_back(it->second);
+    }
+
+    reachable.clear();
+    for (const auto& [head, literals] : head_to_step_literals) {
+      reachable[head] = time + 1 == n
+                            ? 0  // Unused, see below.
+                            : AddDisjunctionLiteral(literals, context);
+    }
+
+    // Redundant, but it helps propagation: when enforced, at least one state is
+    // reachable at each time step. At the last time step, this is exactly the
+    // acceptance condition, written directly on the T literals.
+    BoolArgumentProto* at_least_one =
+        context->AddEnforcedConstraint(ct)->mutable_bool_or();
+    if (time + 1 == n) {
+      std::vector<int> literals;
+      for (const auto& [unused, lits] : head_to_step_literals) {
+        literals.insert(literals.end(), lits.begin(), lits.end());
+      }
+      gtl::STLSortAndRemoveDuplicates(&literals);
+      for (const int lit : literals) at_least_one->add_literals(lit);
+    } else {
+      for (const auto& [head, unused] : head_to_step_literals) {
+        at_least_one->add_literals(reachable.at(head));
+      }
+    }
+  }
+
+  enforced_domains.MaybeAddEnforcedDomainConstraints();
+  if (removed_values) {
+    context->UpdateRuleStats("automaton: reduced variable domains");
+  }
+  context->UpdateRuleStats("automaton: expanded with reachable sets");
+  ct->Clear();
+}
+
 void ExpandAutomaton(ConstraintProto* ct, PresolveContext* context) {
   AutomatonConstraintProto& proto = *ct->mutable_automaton();
 
@@ -1341,6 +1485,13 @@ void ExpandAutomaton(ConstraintProto* ct, PresolveContext* context) {
   std::vector<absl::flat_hash_set<int64_t>> reachable_states;
   std::vector<absl::flat_hash_set<int64_t>> reachable_labels;
   PropagateAutomaton(proto, *context, &reachable_states, &reachable_labels);
+
+  if (context->params().nfa_automaton_mode() ==
+          SatParameters::NFA_REACHABLE_SET_ENCODING &&
+      AutomatonRunEncodingHasDuplicates(*ct)) {
+    ExpandAutomatonWithReachableSets(ct, context, reachable_states);
+    return;
+  }
 
   // We will model at each time step the current automaton state using Boolean
   // variables. We will have n+1 time step. At time zero, we start in the
@@ -3077,6 +3228,13 @@ void ExpandCpModel(PresolveContext* context) {
         ExpandInverse(ct, context);
         break;
       case ConstraintProto::kAutomaton:
+        // The propagator works directly on the labels, so the constraint is
+        // kept as is (and loaded by LoadAutomatonConstraint()).
+        if (context->params().nfa_automaton_mode() ==
+                SatParameters::NFA_PROPAGATOR &&
+            AutomatonRunEncodingHasDuplicates(*ct)) {
+          break;
+        }
         ExpandAutomaton(ct, context);
         break;
       case ConstraintProto::kTransitions:

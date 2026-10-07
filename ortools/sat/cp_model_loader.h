@@ -78,6 +78,7 @@ void AddFullEncodingFromSearchBranching(const CpModelProto& model_proto,
 // Returns false if we do not know how to load the given constraints.
 bool LoadConstraint(const ConstraintProto& ct, Model* m);
 
+void LoadAutomatonConstraint(const ConstraintProto& ct, Model* m);
 void LoadBoolOrConstraint(const ConstraintProto& ct, Model* m);
 void LoadBoolAndConstraint(const ConstraintProto& ct, Model* m);
 void LoadAtMostOneConstraint(const ConstraintProto& ct, Model* m);

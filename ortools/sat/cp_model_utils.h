@@ -241,6 +241,16 @@ bool ExpressionIsAffine(const LinearExpressionProto& expr);
 // ExpressionContainsSingleRef(expr) is true.
 int GetSingleRefFromExpression(const LinearExpressionProto& expr);
 
+// Returns true if no state of the automaton has two outgoing transitions with
+// the same label.
+bool AutomatonIsDeterministic(const AutomatonConstraintProto& automaton);
+
+// Returns true if the run encoding of this automaton constraint (one state per
+// time step) can have several solutions for the same labels: when the
+// automaton is non-deterministic, or when the constraint has enforcement
+// literals (the states are unconstrained when it is not enforced).
+bool AutomatonRunEncodingHasDuplicates(const ConstraintProto& ct);
+
 // Evaluates an affine expression at the given value.
 inline int64_t AffineExpressionValueAt(const LinearExpressionProto& expr,
                                        int64_t value) {

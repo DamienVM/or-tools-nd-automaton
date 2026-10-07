@@ -46,7 +46,8 @@ using ::google::protobuf::contrib::parse_proto::ParseTextOrDie;
 
 CpSolverResponse SolveAndCheck(
     const CpModelProto& initial_model, absl::string_view extra_parameters = "",
-    absl::btree_set<std::vector<int>>* solutions = nullptr) {
+    absl::btree_set<std::vector<int>>* solutions = nullptr,
+    int* num_reported_solutions = nullptr) {
   SatParameters params;
   params.set_enumerate_all_solutions(true);
   params.set_keep_all_feasible_solutions_in_presolve(true);
@@ -60,6 +61,7 @@ CpSolverResponse SolveAndCheck(
     EXPECT_TRUE(SolutionIsFeasible(
         initial_model, std::vector<int64_t>(response.solution().begin(),
                                             response.solution().end())));
+    if (num_reported_solutions != nullptr) ++*num_reported_solutions;
     if (solutions != nullptr) {
       std::vector<int> solution;
       for (int var = 0; var < initial_model.variables_size(); ++var) {
@@ -1491,6 +1493,144 @@ TEST(AutomatonExpandTest, NonDeterministicDenseTransitions) {
       {0, 2, 2}, {1, 0, 0}, {1, 0, 1}, {1, 1, 1}, {1, 2, 2},
       {2, 0, 2}, {2, 1, 1}, {2, 2, 0}, {2, 2, 1}};
   EXPECT_EQ(found_solutions, expected);
+}
+
+constexpr absl::string_view kNfaModes[] = {
+    "nfa_automaton_mode: NFA_RUN_ENCODING",
+    "nfa_automaton_mode: NFA_REACHABLE_SET_ENCODING",
+    "nfa_automaton_mode: NFA_PROPAGATOR",
+};
+
+// All the assignments of the model variables that satisfy all constraints.
+absl::btree_set<std::vector<int>> BruteForceSolutions(
+    const CpModelProto& model) {
+  absl::btree_set<std::vector<int>> result;
+  std::vector<int64_t> values(model.variables_size());
+  for (int var = 0; var < model.variables_size(); ++var) {
+    values[var] = model.variables(var).domain(0);
+  }
+  while (true) {
+    if (SolutionIsFeasible(model, values)) {
+      result.insert(std::vector<int>(values.begin(), values.end()));
+    }
+    int var = 0;
+    for (; var < model.variables_size(); ++var) {
+      const auto& domain = model.variables(var).domain();
+      if (values[var] < domain[domain.size() - 1]) {
+        ++values[var];
+        break;
+      }
+      values[var] = domain[0];
+    }
+    if (var == model.variables_size()) break;
+  }
+  return result;
+}
+
+TEST(AutomatonExpandTest, NonDeterministicModesHaveTheSameSolutions) {
+  // (0, 0) is accepted by two runs. The run encoding reports it twice, the two
+  // other modes only once.
+  const CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { domain: [ 0, 1 ] }
+    variables { domain: [ 0, 1 ] }
+    constraints {
+      automaton {
+        final_states: [ 3 ]
+        transition_tail: [ 0, 0, 1, 2, 0 ]
+        transition_head: [ 1, 2, 3, 3, 1 ]
+        transition_label: [ 0, 0, 0, 0, 1 ]
+        exprs { vars: 0 coeffs: 1 }
+        exprs { vars: 1 coeffs: 1 }
+      }
+    }
+  )pb");
+  const absl::btree_set<std::vector<int>> expected{{0, 0}, {1, 0}};
+  for (const absl::string_view mode : kNfaModes) {
+    SCOPED_TRACE(mode);
+    absl::btree_set<std::vector<int>> found_solutions;
+    int num_reported = 0;
+    const CpSolverResponse response = SolveAndCheck(
+        initial_model, mode, &found_solutions, &num_reported);
+    EXPECT_EQ(response.status(), CpSolverStatus::OPTIMAL);
+    EXPECT_EQ(found_solutions, expected);
+    if (mode != kNfaModes[0]) {
+      EXPECT_EQ(num_reported, expected.size());
+    }
+  }
+}
+
+TEST(AutomatonExpandTest, NonDeterministicRandomAutomata) {
+  absl::BitGen random;
+  for (int iter = 0; iter < 60; ++iter) {
+    const int num_states = absl::Uniform(random, 2, 5);
+    const int num_steps = absl::Uniform(random, 1, 5);
+    const bool enforced = absl::Bernoulli(random, 0.3);
+    CpModelProto model;
+    for (int t = 0; t < num_steps; ++t) {
+      auto* var = model.add_variables();
+      var->add_domain(0);
+      var->add_domain(2);
+    }
+    int enforcement = -1;
+    if (enforced) {
+      enforcement = model.variables_size();
+      auto* var = model.add_variables();
+      var->add_domain(0);
+      var->add_domain(1);
+    }
+    ConstraintProto* ct = model.add_constraints();
+    if (enforced) ct->add_enforcement_literal(enforcement);
+    AutomatonConstraintProto* automaton = ct->mutable_automaton();
+    automaton->set_starting_state(0);
+    for (int s = 0; s < num_states; ++s) {
+      if (absl::Bernoulli(random, 0.4)) automaton->add_final_states(s);
+      for (int label = 0; label < 3; ++label) {
+        for (int h = 0; h < num_states; ++h) {
+          if (!absl::Bernoulli(random, 0.35)) continue;
+          automaton->add_transition_tail(s);
+          automaton->add_transition_label(label);
+          automaton->add_transition_head(h);
+        }
+      }
+    }
+    if (automaton->transition_tail().empty() ||
+        automaton->final_states().empty()) {
+      continue;
+    }
+    for (int t = 0; t < num_steps; ++t) {
+      LinearExpressionProto* expr = automaton->add_exprs();
+      // Sometimes reuse a variable, or use an affine expression.
+      const int var = absl::Bernoulli(random, 0.2) ? 0 : t;
+      expr->add_vars(var);
+      if (absl::Bernoulli(random, 0.2)) {
+        expr->add_coeffs(-1);
+        expr->set_offset(2);
+      } else {
+        expr->add_coeffs(1);
+      }
+    }
+
+    const absl::btree_set<std::vector<int>> expected =
+        BruteForceSolutions(model);
+    for (const absl::string_view mode : kNfaModes) {
+      // When the enforcement literal is false, the Booleans of the run
+      // encoding are unconstrained, so the number of duplicate solutions to
+      // enumerate is exponential.
+      if (enforced && mode == kNfaModes[0]) continue;
+      SCOPED_TRACE(absl::StrCat(mode, "\n", model.DebugString()));
+      absl::btree_set<std::vector<int>> found_solutions;
+      int num_reported = 0;
+      const CpSolverResponse response =
+          SolveAndCheck(model, mode, &found_solutions, &num_reported);
+      EXPECT_EQ(found_solutions, expected);
+      EXPECT_EQ(response.status(), expected.empty()
+                                       ? CpSolverStatus::INFEASIBLE
+                                       : CpSolverStatus::OPTIMAL);
+      if (mode != kNfaModes[0]) {
+        EXPECT_EQ(num_reported, expected.size());
+      }
+    }
+  }
 }
 
 TEST(AutomatonExpandTest, Bug1753_1) {

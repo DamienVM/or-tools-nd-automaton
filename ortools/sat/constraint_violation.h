@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/types/span.h"
 #include "ortools/base/stl_util.h"
@@ -493,6 +494,27 @@ class CompiledBoolXorConstraint : public CompiledConstraintWithProto {
   int64_t ViolationDeltaWhenEnforced(
       int var, int64_t old_value,
       absl::Span<const int64_t> solution_with_new_value) override;
+};
+
+// The violation of a (possibly non-deterministic) automaton constraint is 0 if
+// the label sequence is accepted. Otherwise, if no state is reachable after
+// the first t labels, it is n - t + 1, and if the run reaches the end but not
+// in a final state, it is 1.
+class CompiledAutomatonConstraint : public CompiledConstraintWithProto {
+ public:
+  explicit CompiledAutomatonConstraint(const ConstraintProto& ct_proto);
+  ~CompiledAutomatonConstraint() override = default;
+
+  int64_t ComputeViolationWhenEnforced(
+      absl::Span<const int64_t> solution) override;
+
+ private:
+  absl::flat_hash_map<std::pair<int64_t, int64_t>, std::vector<int64_t>>
+      transitions_;
+  absl::flat_hash_set<int64_t> final_states_;
+  std::vector<LinearExpressionProto> exprs_;
+  std::vector<int64_t> states_;
+  std::vector<int64_t> next_states_;
 };
 
 // The violation of a lin_max constraint is:

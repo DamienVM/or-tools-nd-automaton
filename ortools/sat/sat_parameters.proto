@@ -24,7 +24,7 @@ option java_multiple_files = true;
 // Contains the definitions for all the sat algorithm parameters and their
 // default values.
 //
-// NEXT TAG: 356
+// NEXT TAG: 357
 message SatParameters {
   // In some context, like in a portfolio of search, it makes sense to name a
   // given parameters set for logging purpose.
@@ -545,6 +545,30 @@ message SatParameters {
   // If true, expand the reservoir constraints by creating booleans for all
   // possible precedences between event and encoding the constraint.
   optional bool expand_reservoir_constraints = 182 [default = true];
+
+  // How automaton constraints are handled when the default expansion (one
+  // state per time step) can yield several solutions for the same labels: when
+  // the transition relation is non-deterministic (some state has two outgoing
+  // transitions with the same label), or when the constraint has enforcement
+  // literals (the states are then free when it is not enforced). Other
+  // automaton constraints always use the default expansion.
+  enum NfaAutomatonMode {
+    // Expand by encoding one accepting run: one state per time step. A label
+    // sequence with k accepting runs yields k distinct solutions of the
+    // expanded model, which matters for enumerate_all_solutions.
+    NFA_RUN_ENCODING = 0;
+
+    // Expand by encoding, at each time step, the set of states reachable from
+    // the starting state. All the new Booleans are functionally defined by the
+    // labels, so each label sequence yields exactly one solution.
+    NFA_REACHABLE_SET_ENCODING = 1;
+
+    // Do not expand; use a dedicated propagator that works directly on the
+    // label variables. No auxiliary variable, one solution per label sequence.
+    NFA_PROPAGATOR = 2;
+  }
+  optional NfaAutomatonMode nfa_automaton_mode = 356
+      [default = NFA_RUN_ENCODING];
 
   // Max domain size for expanding linear2 constraints (ax + by ==/!= c).
   optional int32 max_domain_size_for_linear2_expansion = 340 [default = 8];
