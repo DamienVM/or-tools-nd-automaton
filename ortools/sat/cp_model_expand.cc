@@ -1987,6 +1987,9 @@ void ExpandAllowedTransitions(ConstraintProto* ct, PresolveContext* context) {
       values_per_var[1].insert(second_inner);
     }
 
+    // AddSizeTwoTable() requires distinct tuples: it detects a value
+    // supported by the whole other domain by counting its supports.
+    gtl::STLSortAndRemoveDuplicates(&tuples);
     if (tuples.empty()) {
       context->UpdateRuleStats("transitions: allowed constraint is empty");
       return (void)context->NotifyThatModelIsUnsat();

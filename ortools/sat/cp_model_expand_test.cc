@@ -192,6 +192,28 @@ TEST(TransitionsExpandTest, MatchesBruteForceAndTables) {
   }
 }
 
+TEST(TransitionsExpandTest, AllowedWithDuplicatePairs) {
+  // (1, 2) and (2, 1) are listed twice, so x = 2 and y = 2 both have as many
+  // supports as the other variable has values, but (2, 2) is not allowed.
+  const CpModelProto initial_model = ParseTestProto(R"pb(
+    variables { name: 'x' domain: [ 1, 2 ] }
+    variables { name: 'y' domain: [ 1, 2 ] }
+    constraints {
+      transitions {
+        exprs { vars: 0 coeffs: 1 }
+        exprs { vars: 1 coeffs: 1 }
+        allowed { pairs: [ 1, 1, 1, 2, 1, 2, 2, 1, 2, 1 ] }
+      }
+    }
+  )pb");
+  absl::btree_set<std::vector<int>> solutions;
+  const CpSolverResponse response =
+      SolveAndCheck(initial_model, "", &solutions);
+  EXPECT_EQ(response.status(), CpSolverStatus::OPTIMAL);
+  const absl::btree_set<std::vector<int>> expected{{1, 1}, {1, 2}, {2, 1}};
+  EXPECT_EQ(solutions, expected);
+}
+
 TEST(TransitionsExpandTest, NoForbiddenPairsIsTriviallyTrue) {
   const CpModelProto initial_model = ParseTestProto(R"pb(
     variables { name: 'x' domain: 0 domain: 2 }
