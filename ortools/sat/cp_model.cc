@@ -1117,6 +1117,33 @@ AutomatonConstraint CpModelBuilder::AddAutomaton(
   return AutomatonConstraint(proto);
 }
 
+AutomatonConstraint CpModelBuilder::AddNonDeterministicAutomaton(
+    absl::Span<const LinearExpr> transition_expressions, int starting_state,
+    absl::Span<const int> final_states) {
+  AutomatonConstraint ct =
+      AddAutomaton(transition_expressions, starting_state, final_states);
+  ct.MutableProto()->mutable_automaton()->set_non_deterministic(true);
+  return ct;
+}
+
+AutomatonConstraint CpModelBuilder::AddNonDeterministicAutomaton(
+    absl::Span<const IntVar> transition_variables, int starting_state,
+    absl::Span<const int> final_states) {
+  AutomatonConstraint ct =
+      AddAutomaton(transition_variables, starting_state, final_states);
+  ct.MutableProto()->mutable_automaton()->set_non_deterministic(true);
+  return ct;
+}
+
+AutomatonConstraint CpModelBuilder::AddNonDeterministicAutomaton(
+    std::initializer_list<LinearExpr> transition_expressions,
+    int starting_state, absl::Span<const int> final_states) {
+  AutomatonConstraint ct =
+      AddAutomaton(transition_expressions, starting_state, final_states);
+  ct.MutableProto()->mutable_automaton()->set_non_deterministic(true);
+  return ct;
+}
+
 LinearExpressionProto CpModelBuilder::LinearExprToProto(const LinearExpr& expr,
                                                         bool negate) {
   LinearExpressionProto expr_proto;

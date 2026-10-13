@@ -272,6 +272,9 @@ class SolutionCrush {
     int time;
     int64_t transition_tail;
     int64_t transition_label;
+    // Needed to identify the transition when the automaton is
+    // non-deterministic: (tail, label) alone is then not unique.
+    int64_t transition_head;
   };
 
   // Sets the value of `state_vars` and `transition_vars` if all the variables

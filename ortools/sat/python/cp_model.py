@@ -854,6 +854,61 @@ class CpModel(cmh.CpBaseModel):
             transition_triples,
         )
 
+    def add_non_deterministic_automaton(
+        self,
+        transition_expressions: Sequence[LinearExprT],
+        starting_state: IntegralT,
+        final_states: Sequence[IntegralT],
+        transition_triples: Sequence[tuple[IntegralT, IntegralT, IntegralT]],
+    ) -> Constraint:
+        """Adds a non-deterministic automaton constraint.
+
+        Same as `add_automaton()`, except that the automaton can be
+        non-deterministic: several transitions can share the same (*tail*,
+        *transition*) pair. A feasible solution is an assignment of expressions
+        such that there exists at least one path labeled by their values from the
+        initial state to one of the final states.
+
+        Args:
+          transition_expressions: A non-empty list of affine expressions (a * var +
+            b) whose values correspond to the labels of the arcs traversed by the
+            automaton.
+          starting_state: The initial state of the automaton.
+          final_states: A non-empty list of admissible final states.
+          transition_triples: A list of transitions for the automaton, in the
+            following format (current_state, variable_value, next_state).
+
+        Returns:
+          An instance of the `Constraint` class.
+
+        Raises:
+          ValueError: if `transition_expressions`, `final_states`, or
+            `transition_triples` are empty.
+        """
+
+        if not transition_expressions:
+            raise ValueError(
+                "add_non_deterministic_automaton expects a non-empty"
+                " transition_expressions array"
+            )
+        if not final_states:
+            raise ValueError(
+                "add_non_deterministic_automaton expects some final states"
+            )
+
+        if not transition_triples:
+            raise ValueError(
+                "add_non_deterministic_automaton expects some transition triples"
+            )
+
+        return self._add_automaton(
+            transition_expressions,
+            starting_state,
+            final_states,
+            transition_triples,
+            non_deterministic=True,
+        )
+
     def add_inverse(
         self,
         variables: Sequence[VariableT],

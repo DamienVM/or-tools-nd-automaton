@@ -1019,6 +1019,33 @@ class CpModelBuilder {
       std::initializer_list<LinearExpr> transition_expressions,
       int starting_state, absl::Span<const int> final_states);
 
+  /**
+   * A non-deterministic automaton constraint.
+   *
+   * Same as AddAutomaton(), except that the automaton can be
+   * non-deterministic: several transitions can share the same ('tail',
+   * 'label') pair. As in AddAutomaton(), a feasible solution is an assignment
+   * of the expressions such that there exists at least one path labeled by
+   * their values from the initial state to one of the final states.
+   */
+  AutomatonConstraint AddNonDeterministicAutomaton(
+      absl::Span<const LinearExpr> transition_expressions, int starting_state,
+      absl::Span<const int> final_states);
+
+  /**
+   * A non-deterministic automaton constraint.
+   */
+  AutomatonConstraint AddNonDeterministicAutomaton(
+      absl::Span<const IntVar> transition_variables, int starting_state,
+      absl::Span<const int> final_states);
+
+  /**
+   * A non-deterministic automaton constraint.
+   */
+  AutomatonConstraint AddNonDeterministicAutomaton(
+      std::initializer_list<LinearExpr> transition_expressions,
+      int starting_state, absl::Span<const int> final_states);
+
   /// Adds target == min(vars).
   Constraint AddMinEquality(const LinearExpr& target,
                             absl::Span<const IntVar> vars);

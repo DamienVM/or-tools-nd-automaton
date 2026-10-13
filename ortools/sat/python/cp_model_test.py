@@ -1001,6 +1001,46 @@ class CpModelTest(absltest.TestCase):
         with self.assertRaises(ValueError):
             model.add_automaton(x, 0, [2, 3], [])
 
+    def test_non_deterministic_automaton(self) -> None:
+        # State 0 has two outgoing transitions labelled 0.
+        transitions = [
+            (0, 0, 1),
+            (0, 0, 2),
+            (0, 1, 2),
+            (1, 0, 1),
+            (2, 1, 2),
+            (1, 1, 3),
+            (2, 0, 3),
+        ]
+        model = cp_model.CpModel()
+        x = [model.new_int_var(0, 1, f"x{i}") for i in range(4)]
+        model.add_non_deterministic_automaton(x, 0, [3], transitions)
+        self.assertLen(model.proto.constraints, 1)
+        self.assertTrue(model.proto.constraints[0].automaton.non_deterministic)
+        self.assertLen(model.proto.constraints[0].automaton.transition_tail, 7)
+
+        solver = cp_model.CpSolver()
+        solver.parameters.enumerate_all_solutions = True
+        solution_recorder = RecordSolution(x, [])
+        status = solver.solve(model, solution_recorder)
+        self.assertEqual(cp_model.OPTIMAL, status)
+        values = solution_recorder.int_var_values
+        solutions = {tuple(values[i : i + 4]) for i in range(0, len(values), 4)}
+        self.assertEqual(solutions, {(0, 0, 0, 1), (0, 1, 1, 0), (1, 1, 1, 0)})
+
+        # The same transitions are rejected by the deterministic version.
+        dfa_model = cp_model.CpModel()
+        y = [dfa_model.new_int_var(0, 1, f"y{i}") for i in range(4)]
+        dfa_model.add_automaton(y, 0, [3], transitions)
+        self.assertEqual(cp_model.MODEL_INVALID, solver.solve(dfa_model))
+
+        with self.assertRaises(ValueError):
+            model.add_non_deterministic_automaton([], 0, [3], transitions)
+        with self.assertRaises(ValueError):
+            model.add_non_deterministic_automaton(x, 0, [], transitions)
+        with self.assertRaises(ValueError):
+            model.add_non_deterministic_automaton(x, 0, [3], [])
+
     def test_inverse(self) -> None:
         model = cp_model.CpModel()
         x = [model.new_int_var(0, 4, f"x{i}") for i in range(5)]

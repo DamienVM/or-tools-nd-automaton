@@ -288,8 +288,9 @@ message AutomatonConstraintProto {
   repeated int64 final_states = 3;
 
   // List of transitions (all 3 vectors have the same size). Both tail and head
-  // are states, label is any variable value. No two outgoing transitions from
-  // the same state can have the same label.
+  // are states, label is any variable value. Unless non_deterministic is true,
+  // no two outgoing transitions from the same state can have the same label.
+  // The same transition cannot be repeated.
   repeated int64 transition_tail = 4;
   repeated int64 transition_head = 5;
   repeated int64 transition_label = 6;
@@ -299,6 +300,12 @@ message AutomatonConstraintProto {
   // The sequence of expressions. The automaton is ran for exprs_size() "steps"
   // and the value of exprs[i] corresponds to the transition label at step i.
   repeated LinearExpressionProto exprs = 8;
+
+  // If true, the automaton can be non-deterministic: several outgoing
+  // transitions from the same state can have the same label, and the
+  // constraint is satisfied as soon as there exists an accepting run of the
+  // sequence of labels.
+  bool non_deterministic = 9;
 }
 
 // A flat list of ordered value pairs: [first_0, second_0, first_1, ...].

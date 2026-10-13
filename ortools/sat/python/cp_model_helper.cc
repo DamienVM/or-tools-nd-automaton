@@ -564,7 +564,8 @@ class CpBaseModel : public std::enable_shared_from_this<CpBaseModel> {
   std::shared_ptr<Constraint> AddAutomatonInternal(
       py::sequence transition_expressions, int64_t starting_state,
       const std::vector<int64_t>& final_states,
-      const std::vector<std::vector<int64_t>>& transition_triples);
+      const std::vector<std::vector<int64_t>>& transition_triples,
+      bool non_deterministic);
 
   std::shared_ptr<Constraint> AddBoolArgumentConstraintInternal(
       BoolArgumentConstraint type, py::args literals);
@@ -677,13 +678,15 @@ std::shared_ptr<Constraint> CpBaseModel::AddAllDifferentInternal(
 std::shared_ptr<Constraint> CpBaseModel::AddAutomatonInternal(
     py::sequence transition_expressions, int64_t starting_state,
     const std::vector<int64_t>& final_states,
-    const std::vector<std::vector<int64_t>>& transition_triples) {
+    const std::vector<std::vector<int64_t>>& transition_triples,
+    bool non_deterministic) {
   const int ct_index = model_proto_->constraints_size();
   ConstraintProto* ct = model_proto_->add_constraints();
   for (const auto& expr : transition_expressions) {
     LinearExprToProto(expr, 1, ct->mutable_automaton()->add_exprs());
   }
   ct->mutable_automaton()->set_starting_state(starting_state);
+  ct->mutable_automaton()->set_non_deterministic(non_deterministic);
   ct->mutable_automaton()->mutable_final_states()->Add(final_states.begin(),
                                                        final_states.end());
   for (const auto& tuple : transition_triples) {
@@ -1955,7 +1958,8 @@ PYBIND11_MODULE(cp_model_helper, m) {
       .def("_add_all_different", &CpBaseModel::AddAllDifferentInternal)
       .def("_add_automaton", &CpBaseModel::AddAutomatonInternal,
            py::arg("transition_expressions"), py::arg("starting_state"),
-           py::arg("final_states"), py::arg("transition_triples"))
+           py::arg("final_states"), py::arg("transition_triples"),
+           py::arg("non_deterministic") = false)
       .def("_add_bool_argument_constraint",
            &CpBaseModel::AddBoolArgumentConstraintInternal, py::arg("name"))
       .def("_add_bounded_linear_expression",

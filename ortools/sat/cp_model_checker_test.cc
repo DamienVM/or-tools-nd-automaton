@@ -30,6 +30,7 @@ namespace {
 
 using ::google::protobuf::contrib::parse_proto::ParseTestProto;
 using ::testing::HasSubstr;
+using ::testing::IsEmpty;
 
 // This just checks that the code is at least properly executed.
 TEST(SolutionIsFeasibleTest, BasicExample) {
@@ -621,6 +622,47 @@ TEST(ValidateCpModelTest, IncompatibleAutomatonTransitions) {
   )pb");
   EXPECT_THAT(ValidateCpModel(model),
               HasSubstr("automaton: incompatible transitions"));
+}
+
+TEST(ValidateCpModelTest, NonDeterministicAutomatonTransitionsAreValid) {
+  const CpModelProto model = ParseTestProto(R"pb(
+    variables { domain: 0 domain: 1 }
+    constraints {
+      automaton {
+        non_deterministic: true
+        final_states: 0
+        transition_tail: 0
+        transition_tail: 0
+        transition_head: 0
+        transition_head: 1
+        transition_label: 0
+        transition_label: 0
+        vars: 0
+      }
+    }
+  )pb");
+  EXPECT_THAT(ValidateCpModel(model), IsEmpty());
+}
+
+TEST(ValidateCpModelTest, DuplicateNonDeterministicAutomatonTransitions) {
+  const CpModelProto model = ParseTestProto(R"pb(
+    variables { domain: 0 domain: 1 }
+    constraints {
+      automaton {
+        non_deterministic: true
+        final_states: 0
+        transition_tail: 0
+        transition_tail: 0
+        transition_head: 0
+        transition_head: 0
+        transition_label: 0
+        transition_label: 0
+        vars: 0
+      }
+    }
+  )pb");
+  EXPECT_THAT(ValidateCpModel(model),
+              HasSubstr("automaton: duplicate transition"));
 }
 
 TEST(ValidateCpModelTest, DuplicateAutomatonTransitions) {

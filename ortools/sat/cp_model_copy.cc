@@ -658,6 +658,8 @@ bool ModelCopy::CopyAutomaton(const ConstraintProto& ct) {
       ct.automaton().transition_head();
   *new_ct->mutable_automaton()->mutable_transition_label() =
       ct.automaton().transition_label();
+  new_ct->mutable_automaton()->set_non_deterministic(
+      ct.automaton().non_deterministic());
   for (const LinearExpressionProto& expr : ct.automaton().exprs()) {
     CopyLinearExpression(expr, new_ct->mutable_automaton()->add_exprs());
   }
